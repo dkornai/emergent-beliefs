@@ -183,7 +183,7 @@ def loss_tracker(losses, loss_histories):
     # Sum
     loss = np.round(td_L + obs_L + rew_L + rew_pL + obs_L2 + rew_pL2, 2)
 
-    string = f"l TD: {td_L}, l R est: {rew_L}, l R pred: {rew_pL}, l O pred: {obs_L}, l R pred2: {rew_pL2}, l O pred2: {obs_L2}, Total: {loss}     "
+    string = f"l TD: {td_L}, l R est: {rew_L}, l R pred: {rew_pL},  l R pred2: {rew_pL2}, l O pred: {obs_L},l O pred2: {obs_L2}, Total: {loss}     "
 
     return string
     

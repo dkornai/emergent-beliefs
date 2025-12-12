@@ -34,11 +34,12 @@ def plot_validate(
     for episode in test_episodes:
         validate_values(belief_model, value_model, episode, history_values, state_values)
 
-        validate_rewards(belief_model, reward_model, episode, environment)
+        validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 0)
+        validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 1)
+        validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 2)
 
-        validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment)
-
-        validate_observations(belief_model, pred_model, obs_model, episode, environment) 
+        validate_pred_observations(belief_model, pred_model, obs_model, episode, environment, steps = 1) 
+        validate_pred_observations(belief_model, pred_model, obs_model, episode, environment, steps = 2) 
     
     belief_model.to(device)
     value_model.to(device)
@@ -94,60 +95,45 @@ def validate_values(belief_model, value_model, test_episode, history_values, sta
     plt.legend()
     plt.show()
 
-def validate_rewards(belief_model, reward_model, test_episode, env):
-    # 
-    true_expected_rewards = test_episode.belief_states @ env.reward_vec
-    true_expected_rewards = np.round(true_expected_rewards, 2)
 
-    true_rewards = test_episode.rewards
-    
- 
-    with torch.no_grad():
-        history = torch.tensor(test_episode.history, dtype=torch.float32).unsqueeze(0)  # shape: [1, T, D]
-
-        z = belief_model(history)  # shape: [1, T]
-        predicted_rewards = reward_model(z)
-        rewards = predicted_rewards.squeeze(0).numpy()  # shape: [T]
-
-    rewards = np.round(rewards, 2)
-
-    print("True Expected Rewards:")
-    print(true_expected_rewards)
-    print("True Observed rewards")
-    print(true_rewards)
-    print("Estimated Rewards:")
-    print(rewards)
-    
-    plt.figure(figsize=(10, 5))
-    plt.plot(true_expected_rewards, label='Expected Rewards', marker='o')
-    plt.plot(true_rewards, label='Observed Rewards', marker='o')
-    plt.plot(rewards, label='Estimated Rewards', marker='x')
-    plt.title("True vs Estimated Rewards")
-    plt.xlabel("Time Step")
-    plt.ylabel("Reward")
-    plt.legend()
-    plt.show()
-
-def predict_belief_given_action(episode, env):
+def predict_belief_given_action(episode, env, steps):
     true_belief_states = episode.belief_states
     actions = episode.actions
     
-    # Calculate prediction of belief given current belief and action 
-    optimal_next_belief_states = []
-    for i in range(len(true_belief_states) - 1):
-        next_belief_pred = true_belief_states[i] @ env.tp_matrix[np.argmax(actions[i+1])]
-        optimal_next_belief_states.append(next_belief_pred)
+    if steps == 0:
+        return true_belief_states
+    
+    if steps == 1:
 
-    return optimal_next_belief_states
+        # Calculate prediction of belief given current belief and action 
+        optimal_next_belief_states = []
+        for i in range(len(true_belief_states) - 1):
+            next_belief_pred = true_belief_states[i] @ env.tp_matrix[np.argmax(actions[i+1])]
+            optimal_next_belief_states.append(next_belief_pred)
 
-def validate_pred_rewards(belief_model, pred_model, reward_model, test_episode, env):
+        return optimal_next_belief_states
+    
+    if steps == 2:
 
-    optimal_next_belief_states = predict_belief_given_action(test_episode, env)
+        # Calculate prediction of belief given current belief and action 
+        optimal_next_belief_states = []
+        for i in range(len(true_belief_states) - 2):
+            next_belief_pred = true_belief_states[i] @ env.tp_matrix[np.argmax(actions[i+1])]
+            next_belief_pred = next_belief_pred @ env.tp_matrix[np.argmax(actions[i+2])]
+            optimal_next_belief_states.append(next_belief_pred)
+
+        return optimal_next_belief_states
+
+
+
+def validate_pred_rewards(belief_model, pred_model, reward_model, test_episode, env, steps):
+
+    optimal_next_belief_states = predict_belief_given_action(test_episode, env, steps)
     
     true_expected_rewards = optimal_next_belief_states @ env.reward_vec
     true_expected_rewards = np.round(true_expected_rewards, 2)
 
-    true_rewards = test_episode.rewards[1:]
+    true_rewards = test_episode.rewards[steps:]
     
 
     with torch.no_grad():
@@ -155,10 +141,14 @@ def validate_pred_rewards(belief_model, pred_model, reward_model, test_episode, 
         actions = torch.tensor(test_episode.actions, dtype=torch.float32).unsqueeze(0)  # shape: [1, T, A]
 
         z = belief_model(history)  # shape: [1, T]
-        #print(z)
-        pred_z = pred_model(z, actions, pred_steps=1)
-        #print(pred_z)
-        predicted_rewards = reward_model(pred_z)
+        
+        if steps in [1, 2]:
+            z = pred_model(z, actions, pred_steps=1)
+        if steps in [2]:
+            z = pred_model(z, actions, pred_steps=2)
+        
+        predicted_rewards = reward_model(z)
+        
         rewards = predicted_rewards.squeeze(0).numpy()  # shape: [T]
 
     rewards = np.round(rewards, 2)
@@ -182,22 +172,25 @@ def validate_pred_rewards(belief_model, pred_model, reward_model, test_episode, 
 
 
 
-def validate_observations(belief_model, pred_model, obs_model, test_episode, env):
-    optimal_next_belief_states = predict_belief_given_action(test_episode, env)
+def validate_pred_observations(belief_model, pred_model, obs_model, test_episode, env, steps):
+    optimal_next_belief_states = predict_belief_given_action(test_episode, env, steps)
 
     true_expected_observation = optimal_next_belief_states @ env.obs_matrix
 
-    true_observations = test_episode.observations[1:]
+    true_observations = test_episode.observations[steps:]
 
     with torch.no_grad():
         history = torch.tensor(test_episode.history, dtype=torch.float32).unsqueeze(0)  # shape: [1, T, D]
         actions = torch.tensor(test_episode.actions, dtype=torch.float32).unsqueeze(0)  # shape: [1, T, A]
 
         z = belief_model(history)  # shape: [1, T]
-        #print(z)
-        pred_z = pred_model(z, actions, pred_steps=1)
-        #print(pred_z)
-        predicted_obs = obs_model(pred_z)
+        
+        if steps in [1, 2]:
+            z = pred_model(z, actions, pred_steps=1)
+        if steps in [2]:
+            z = pred_model(z, actions, pred_steps=2)
+        
+        predicted_obs = obs_model(z)
         predicted_obs = F.softmax(predicted_obs, dim=-1).numpy()
 
 
