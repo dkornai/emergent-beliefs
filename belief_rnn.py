@@ -32,33 +32,6 @@ class BeliefRNN(nn.Module):
 
 
 
-class RewardReadout(nn.Module):
-    """
-    Map the latent z_t to a prediction for the reward r_t
-    """
-    
-    def __init__(self, latent_dim):
-        super().__init__()
-        self.fc1 = nn.Linear(latent_dim, 1)
-
-    def forward(self, z):
-        x = self.fc1(z)
-        
-        return x.squeeze(-1)  # [B, T]
-
-
-def loss_reward(
-        est_rewards:   torch.tensor, 
-        rewards:        torch.tensor, 
-        mask:           torch.tensor
-        ):
-    """
-    Calculate the mean squared reward estimation loss
-    """
-    # Compute the reward loss
-    reward_loss = F.mse_loss(est_rewards, rewards, reduction='none') * mask  # sum over valid time steps
-    
-    return reward_loss.sum() / mask.sum()  # average over non-masked values
 
 
 
@@ -79,6 +52,9 @@ class ValueReadout(nn.Module):
         out = torch.sum(w * b, dim=-1)  # inner product <w, b>
         
         return out
+    
+    def reveal_w(self, b):
+        return self.net(b)
 
 # TD loss function
 def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
@@ -104,22 +80,38 @@ def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
     return loss
 
 
-def loss_value_mc(values, returns, mask_monte_carlo):
-    # Compute the mc loss only at start and terminal states
-    mc_values = values * mask_monte_carlo
-    mc_returns = returns * mask_monte_carlo
+
+
+class RewardReadout(nn.Module):
+    """
+    Map the latent z_t to a prediction for the reward r_t
+    """
     
-    # Set first state return to the average of all first states
-    start_state_return = mc_returns[:, 0].mean()
-    mc_returns[:, 0] = start_state_return  
+    def __init__(self, latent_dim):
+        super().__init__()
+        self.fc1 = nn.Linear(latent_dim, 1)
 
-    mc_error = (mc_values - mc_returns) ** 2
+    def forward(self, z):
+        x = self.fc1(z)
+        
+        return x.squeeze(-1)  # [B, T]
 
-    mc_loss = mc_error.sum() / mask_monte_carlo.sum()  # average loss over non-masked values
 
-    return mc_loss
-
-
+def loss_reward(
+        est_rewards:    torch.tensor, 
+        rewards:        torch.tensor, 
+        mask:           torch.tensor,
+        pred_steps:     int
+        ):
+    """
+    Calculate the mean squared reward estimation loss
+    """
+    # Compute the reward loss
+    rewards = rewards[:,pred_steps:]
+    mask    = mask[:,pred_steps:]
+    
+    reward_loss = F.mse_loss(est_rewards, rewards, reduction='none') * mask  # sum over valid time steps
+    return reward_loss.sum() / mask.sum()  # average over non-masked values
 
 
 
@@ -136,12 +128,12 @@ class NextLatentPredictor(nn.Module):
             nn.Linear(hidden, latent_dim)
         )
 
-    def forward(self, z, a):
+    def forward(self, z, a, pred_steps):
        
         pred_input = z[:, :-1, :]       # h_t
-        next_actions = a[:, 1:, :]      # a_{t+1}
+        next_actions = a[:, pred_steps:, :]      # a_{t + pred_steps}
 
-        predictor_input = torch.cat([pred_input, next_actions], dim=-1)  # [B, T-1, Z+4]
+        predictor_input = torch.cat([pred_input, next_actions], dim=-1)  # [B, T - pred_steps, Z+4]
         
         pred = self.net(predictor_input)
 
@@ -152,7 +144,7 @@ class NextLatentPredictor(nn.Module):
 
 class ObsReadout(nn.Module):
     """
-    What is the distribution over observations given the latent
+    What is the distribution over observations given the latent (returns logits)
     """
     def __init__(self, latent_dim, obs_dim):
         super().__init__()
@@ -163,18 +155,23 @@ class ObsReadout(nn.Module):
         
         return x
 
+def loss_obs(
+        est_o_logits    : torch.tensor, 
+        o               : torch.tensor, 
+        mask            : torch.tensor, 
+        pred_steps      : int
+        ):
+    """
+    Categorical cross entropy loss for observation prediction
+    """
 
-
-
-def loss_obs(est_o_logits, o, mask):
-    # x includes actions in last 4 dims
-
-    pred_obs_target = o[:, 1:, :]        # o_{t+1}
-    aux_mask = mask[:, 1:]                 # mask for t+1
+    pred_obs_target = o[:, pred_steps:, :]        # o_{t+1}
+    aux_mask        = mask[:, pred_steps:]        # mask for t+1
 
     # Compute cross-entropy loss
-    target_labels = pred_obs_target.argmax(dim=-1)  # [B, T-1]
-    aux_loss = F.cross_entropy(est_o_logits.transpose(1, 2), target_labels, reduction='none')  # [B, T-1]
+    logits          = est_o_logits.transpose(1, 2)
+    target_labels   = pred_obs_target.argmax(dim=-1)  # [B, T - pred_steps]
+    aux_loss = F.cross_entropy(logits, target_labels, reduction='none')  # [B, T - pred_steps]
 
     aux_loss = aux_loss * aux_mask  # Apply mask
     return aux_loss.sum() / aux_mask.sum()

@@ -232,45 +232,17 @@ class EpisodeCollection():
             table.append({
                 "history": entry["vec"],
                 "count": len(arr),
-                "mean_return": float(arr.mean()),
-                "var_return": float(arr.var(ddof=1)) if len(arr) > 1 else 0.0
+                "mean_return": float(np.round(arr.mean(),2)),
+                "var_return": float(np.round(arr.var(ddof=1),2)) if len(arr) > 1 else 0.0
             })
         
         # Print feedback
         print("History value estimation complete.")
         print(f"{len(table)} unique histories found in dataset.")
 
-        # Build a lookup map for fast queries:
-        self.history_mean_lookup = {
-            entry["history"].tobytes(): entry["mean_return"]
-            for entry in table
-        }
-
-        self.history_value_table = table
-        return table
-
-    def query_history_value(self, history_prefix):
-        """
-        Given a partial history (2D array of shape [t+1, H], or flattened 1D vector),
-        return its mean Monte Carlo return if it exists in the dataset.
-        Otherwise return np.nan.
-        """
-
-        # Ensure history values have been computed
-        if not hasattr(self, "history_mean_lookup"):
-            raise RuntimeError("Call history_values(gamma) before querying.")
-
-        # Convert to 1D vector if needed
-        history_prefix = np.asarray(history_prefix)
-
-        if history_prefix.ndim == 2:
-            history_prefix = history_prefix.reshape(-1)
-        elif history_prefix.ndim != 1:
-            raise ValueError("History must be a 1D or 2D numpy array.")
-
-        key = history_prefix.tobytes()
-
-        return self.history_mean_lookup.get(key, np.nan)
+        hvt = HistoryValueTable(table)
+        self.history_value_table = hvt
+        return hvt
 
 
     def episodes_to_batch(self):
@@ -363,3 +335,70 @@ def collect_episodes(env:PomdpEnv, policy:np.array, num_episodes:int) -> list[Ep
 
 
 
+class HistoryValueTable:
+    """
+    Stores return statistics (mean, variance) for each unique partial history.
+    """
+
+    def __init__(self, entries):
+        """
+        entries: list of dicts with fields:
+            - "history" : numpy array (flattened history)
+            - "mean_return"
+            - "var_return"
+            - "count"
+        """
+
+        self.table = entries
+
+        # Fast lookup: bytes → stats dict
+        self.lookup = {
+            entry["history"].tobytes(): {
+                "mean": entry["mean_return"],
+                "var": entry["var_return"],
+                "count": entry["count"],
+                "history": entry["history"]
+            }
+            for entry in entries
+        }
+
+    def _prepare_key(self, history):
+        """
+        Convert history (1D or 2D numpy array) to a canonical bytes key.
+        """
+        h = np.asarray(history, dtype=np.float32)
+
+        if h.ndim == 2:
+            h = h.reshape(-1)
+        elif h.ndim != 1:
+            raise ValueError("History must be a 1D or 2D array")
+
+        return h.tobytes()
+
+    def query(self, history):
+        """
+        Return the mean value for a given history, or np.nan if not present.
+        """
+        key = self._prepare_key(history)
+        stats = self.lookup.get(key, None)
+        return stats["mean"] if stats is not None else np.nan
+
+    def get_stats(self, history):
+        """
+        Return full statistics: {mean, var, count, history} or None.
+        """
+        key = self._prepare_key(history)
+        return self.lookup.get(key, None)
+
+    def exists(self, history):
+        """
+        Check if the history exists in the table.
+        """
+        key = self._prepare_key(history)
+        return key in self.lookup
+
+    def __len__(self):
+        return len(self.lookup)
+
+    def __repr__(self):
+        return f"HistoryValueTable(num_histories={len(self)})"
