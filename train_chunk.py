@@ -1,7 +1,7 @@
 import torch
 from episodes import EpisodeCollection
 from belief_rnn import loss_value_td, loss_reward, loss_obs, loss_q_td
-from actor import compute_returns, MovingBaseline, collect_episodes_actor, ActorPolicyWrapper
+from actor import collect_episodes_actor, ActorPolicyWrapper
 from plot_validate import plot_validate
 
 def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
@@ -37,8 +37,8 @@ def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
 
 
 def compute_model_loss(
-        newest_chunk: EpisodeCollection,
-        all_chunks: list[EpisodeCollection],
+        newest_chunk:       EpisodeCollection,
+        all_chunks:         list[EpisodeCollection],
         models,
         gamma,
         lambda_value=1.0,
@@ -48,14 +48,14 @@ def compute_model_loss(
     """
     Compute loss that updates:
         - belief_rnn
-        - critic (value head)
+        - critics (value head, q value head)
         - world model heads (reward_head, pred_head, obs_head)
 
     Returns:
         model_loss : scalar tensor
         log_dict   : {'value': ..., 'world': ...}
     """
-    belief_rnn, actor, critic, q_head, reward_head, pred_head, obs_head = models
+    belief_rnn, actor, v_head, q_head, reward_head, pred_head, obs_head = models
 
     # ----- newest chunk tensors -----
     h_new    = newest_chunk.batch_histories.to(device)
@@ -64,19 +64,15 @@ def compute_model_loss(
     act_new  = newest_chunk.batch_actions.to(device)     # [B, T, A]
 
     # latent sequence
-    z_full   = belief_rnn(h_new)      # [B, T, H]
-
-    # state-value critic
-    V_full   = critic(z_full)                            # [B, T]
-
-    # action-value critic
-    Q_full   = q_head(z_full)                            # [B, T, A]
+    z_full   = belief_rnn(h_new)                        # [B, T, H]
 
     # ---------------------------------------------------
-    # CRITIC / Q LOSS (TD) using full z
+    # VALUE AND Q-VALUE LOSS (CRITIC LOSS)
     # ---------------------------------------------------
     if lambda_value > 0.0:
         # 1) state-value TD loss (as before)
+        V_full   = v_head(z_full)                            # [B, T]
+
         V_loss = loss_value_td(
             values=V_full,
             rewards=rew_new,
@@ -86,6 +82,8 @@ def compute_model_loss(
         )
 
         # 2) Q-value TD loss (new)
+        Q_full   = q_head(z_full)                            # [B, T, A]
+
         Q_loss = loss_q_td(
             q_values=Q_full,
             rewards=rew_new,
@@ -96,12 +94,11 @@ def compute_model_loss(
         )
 
         critic_loss = lambda_value * (V_loss + Q_loss)
-        #print(V_loss, Q_loss)
     else:
         critic_loss = torch.tensor(0.0, device=device)
 
     # ---------------------------------------------------
-    # WORLD MODEL LOSS (all chunks) -- unchanged, except it uses belief_rnn only
+    # WORLD MODEL LOSS
     # ---------------------------------------------------
     world_loss = torch.tensor(0.0, device=device)
 
@@ -134,9 +131,7 @@ def compute_model_loss(
 
         world_loss = lambda_world * (world_loss / min(10, len(all_chunks)))
 
-    # ---------------------------------------------------
-    # MODEL LOSS = critic + world   (updates belief_rnn + critic + Q + world)
-    # ---------------------------------------------------
+    # Total loss is from both critic loss and world loss
     model_loss = critic_loss + world_loss
 
     return model_loss, {
@@ -147,7 +142,6 @@ def compute_model_loss(
 def compute_actor_loss(
         newest_chunk: EpisodeCollection,
         models,
-        gamma,
         lambda_actor=1.0,
         device="cpu"
     ):
@@ -170,8 +164,6 @@ def compute_actor_loss(
     z_full   = belief_rnn(h_new)           # [B, T, H]
     z_det    = z_full.detach()             # don't let actor update the encoder
 
-
-
     # state-value critic
     V_full   = critic(z_full)                            # [B, T]
 
@@ -182,17 +174,6 @@ def compute_actor_loss(
     # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
     # ---------------------------------------------------
 
-    #         # We want transitions at (z_t, a_t). In your logging:
-    #   z_t      is at index t
-    #   a_t      is stored at actions[:, t+1]
-    #   mask_new[:, t] == 1 for valid states
-    #
-    # So align as:
-    #   z_actor       = z_t       for t = 0..T-2  (indices 0..T-2)
-    #   actions_actor = a_t       stored at index t+1  -> slice 1..T-1
-    #   mask_actor    = mask for those actions   -> slice 1..T-1
-    B, T = rew_new.shape
-
     z_actor        = z_det[:, :-1, :]        # [B, T-1, H], states z_0..z_{T-2}
     actions_actor  = act_new[:, 1:, :]       # [B, T-1, A], actions a_0..a_{T-2}
     mask_actor     = mask_new[:, 1:]         # [B, T-1]
@@ -202,25 +183,20 @@ def compute_actor_loss(
     log_probs_all  = torch.log(probs_actor + 1e-8)
     log_probs      = torch.sum(actions_actor * log_probs_all, dim=-1)  # [B, T-1]
 
-    # Q(z_t, a_t): use z_t and a_t
-    Q_t_all        = Q_full[:, :-1, :]       # [B, T-1, A]
-    Q_t_all        = Q_t_all * mask_actor.unsqueeze(-1)
-    # print('Q function')
-    # print(Q_t_all[0,:,:])
-    Q_sa           = torch.sum(Q_t_all.detach() * actions_actor, dim=-1)  # [B, T-1]
-
-    # Baseline V(z_t)
+    # Q(z_t, A_t) for all actions
+    Q_t_all        = Q_full[:, :-1, :]                                      # [B, T-1, A]
+    Q_t_all        = Q_t_all * mask_actor.unsqueeze(-1)                     # [B, T-1, A]
     
+    # Q(z_t, a_t) for the specific action
+    Q_sa           = torch.sum(Q_t_all.detach() * actions_actor, dim=-1)    # [B, T-1]
+
+    # V(z_t)
     V_actor        = V_full[:, :-1].detach()  # [B, T-1]
     V_actor        = V_actor * mask_actor
-    # print('V function')
-    # print(V_actor[0,:].reshape(-1,1))
 
+    # Advantage
     A_actor        = Q_sa - V_actor          # [B, T-1]
     A_actor        = A_actor * mask_actor
-    # print('Adv function')
-    # print(A_actor[0,:].reshape(-1,1))
-
 
     # Normalise advantages over valid entries
     valid_mask     = (mask_actor == 1.0)
@@ -276,8 +252,9 @@ def train_with_chunks(
     memory = initial_chunks[:]
 
     for chunk_idx in range(num_new_chunks):
-
-        # Collect episodes on-policy with actor
+        # ============================================================
+        # PHASE 0: Collect episodes on-policy with actor
+        # ============================================================
         actor_policy = ActorPolicyWrapper(belief_rnn, actor, device=device)
         eps = collect_episodes_actor(env, actor_policy, num_episodes=episodes_per_chunk)
 
@@ -333,7 +310,6 @@ def train_with_chunks(
             actor_loss, actor_logs = compute_actor_loss(
                 newest_chunk=EC_new,
                 models=models,
-                gamma=gamma,
                 lambda_actor=lambda_actor,
                 device=device
             )

@@ -51,42 +51,6 @@ class ActorPolicyWrapper:
 
         return action.item(), logp.item()
 
-def compute_returns(rewards, mask, gamma):
-    """
-    rewards : [B, T]
-    mask    : [B, T]  (1 for valid, 0 for padded)
-    Returns : G : [B, T]
-    """
-    B, T = rewards.shape
-    G = torch.zeros_like(rewards)
-    for b in range(B):
-        running = 0.0
-        for t in reversed(range(T)):
-            if mask[b, t] == 1.0:
-                running = rewards[b, t] + gamma * running
-                G[b, t] = running
-    return G
-
-
-class MovingBaseline:
-    """
-    Exponential moving average baseline.
-    """
-    def __init__(self, alpha=0.05):
-        self.alpha = alpha
-        self.value = None
-
-    def update(self, batch_returns):
-        """
-        batch_returns : tensor of returns for newest chunk (flattened or mean over batch)
-        """
-        mean_return = batch_returns.mean().item()
-        if self.value is None:
-            self.value = mean_return
-        else:
-            self.value = (1 - self.alpha) * self.value + self.alpha * mean_return
-        return self.value
-
 
 def collect_episodes_actor(env, actor_policy: ActorPolicyWrapper, num_episodes: int):
     """
