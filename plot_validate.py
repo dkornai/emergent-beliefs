@@ -15,7 +15,12 @@ def plot_validate(
         state_values
         ):
     # Unpack models
-    belief_model, value_model, reward_model, pred_model, obs_model = models
+    if len(models) == 5:
+        belief_model, value_model, reward_model, pred_model, obs_model = models
+    elif len(models) == 6:
+        belief_model, actor_mode, value_model, reward_model, pred_model, obs_model = models
+    elif len(models) == 7:
+        belief_model, actor_mode, value_model, q_model, reward_model, pred_model, obs_model = models
 
     device = next(belief_model.parameters()).device
 
@@ -32,15 +37,23 @@ def plot_validate(
     obs_model.eval()
     
     for episode in test_episodes:
-        validate_values(belief_model, value_model, episode, history_values, state_values)
+        print(">>>> Test episode:")
+        print(len(episode.rewards))
+
+        if not (state_values == None and history_values == None):
+            validate_values(belief_model, value_model, episode, history_values, state_values)
 
         validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 0)
         validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 1)
-        validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 2)
+        if len(episode.rewards) > 2:
+            validate_pred_rewards(belief_model, pred_model, reward_model, episode, environment, steps = 2)
 
         validate_pred_observations(belief_model, pred_model, obs_model, episode, environment, steps = 1) 
-        validate_pred_observations(belief_model, pred_model, obs_model, episode, environment, steps = 2) 
+        if len(episode.rewards) > 2:
+            validate_pred_observations(belief_model, pred_model, obs_model, episode, environment, steps = 2) 
     
+    print("Finished plots")
+
     belief_model.to(device)
     value_model.to(device)
     reward_model.to(device)
