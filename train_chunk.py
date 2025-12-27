@@ -3,6 +3,7 @@ from episodes import EpisodeCollection
 from belief_rnn import loss_value_td, loss_reward, loss_obs, loss_q_td
 from actor import collect_episodes_actor, ActorPolicyWrapper
 from plot_validate import plot_validate
+import torch.nn.utils as nn_utils
 
 def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
     """
@@ -34,10 +35,9 @@ def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
         "other_rate": others / total
     }
 
-
+N_CHUNKS_PAST = 10
 
 def compute_model_loss(
-        newest_chunk:       EpisodeCollection,
         all_chunks:         list[EpisodeCollection],
         models,
         gamma,
@@ -55,67 +55,72 @@ def compute_model_loss(
         model_loss : scalar tensor
         log_dict   : {'value': ..., 'world': ...}
     """
-    belief_rnn, actor, v_head, q_head, reward_head, pred_head, obs_head = models
+    belief_rnn, actor, v_heads, q_heads, reward_head, pred_head, obs_head = models
 
-    # ----- newest chunk tensors -----
-    h_new    = newest_chunk.batch_histories.to(device)
-    mask_new = newest_chunk.batch_mask_traj.to(device)
-    rew_new  = newest_chunk.batch_rewards.to(device)
-    act_new  = newest_chunk.batch_actions.to(device)     # [B, T, A]
+    # Last few chunks from the complete collection, presented in reverse order (first element is most recent)
+    chunks_to_process = list(reversed(all_chunks[-N_CHUNKS_PAST:]))
+    n_chunks = len(chunks_to_process)
 
-    # latent sequence
-    z_full   = belief_rnn(h_new)                        # [B, T, H]
 
-    # ---------------------------------------------------
-    # VALUE AND Q-VALUE LOSS (CRITIC LOSS)
-    # ---------------------------------------------------
-    if lambda_value > 0.0:
-        # 1) state-value TD loss (as before)
-        V_full   = v_head(z_full)                            # [B, T]
+    world_loss  = torch.tensor(0.0, device=device)
+    critic_loss = torch.tensor(0.0, device=device)
 
-        V_loss = loss_value_td(
-            values=V_full,
-            rewards=rew_new,
-            mask_traj=mask_new,
-            lengths=newest_chunk.ep_lengths,
-            gamma=gamma
-        )
+    for i, EC in enumerate(chunks_to_process):
+        # Move data to device
+        h    = EC.batch_histories.to(device)
+        obs  = EC.batch_observations.to(device)
+        rew  = EC.batch_rewards.to(device)
+        mask = EC.batch_mask_traj.to(device)
+        actions = EC.batch_actions.to(device)
 
-        # 2) Q-value TD loss (new)
-        Q_full   = q_head(z_full)                            # [B, T, A]
+        # Calculate hidden state
+        z = belief_rnn(h)  # full gradients allowed
 
-        Q_loss = loss_q_td(
-            q_values=Q_full,
-            rewards=rew_new,
-            actions=act_new,
-            mask_traj=mask_new,
-            lengths=newest_chunk.ep_lengths,
-            gamma=gamma
-        )
+        # ---------------------------------------------------
+        # VALUE AND Q-VALUE LOSS (CRITIC LOSS)
+        # ---------------------------------------------------
+        if lambda_value > 0.0:
+            V_loss = torch.tensor(0.0, device=device)
+            Q_loss = torch.tensor(0.0, device=device)
 
-        critic_loss = lambda_value * (V_loss + Q_loss)
-    else:
-        critic_loss = torch.tensor(0.0, device=device)
+            # If there are enough value heads
+            if i < len(v_heads):
+                V_full   = v_heads[i](z)                       # [B, T]
+                
+                # 1) state-value TD loss
+                td_loss = loss_value_td(
+                    values=V_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
+                    )
+                # # 2) State value Monte Carlo loss
+                # with torch.no_grad():
+                #     mc_returns = EC.get_monte_carlo_returns(gamma).to(device)  # [B, T]
+                # mc_sq_error = (V_full - mc_returns)**2      # [B, T]
+                # mc_loss     = (mc_sq_error * mask).sum() / mask.sum()
 
-    # ---------------------------------------------------
-    # WORLD MODEL LOSS
-    # ---------------------------------------------------
-    world_loss = torch.tensor(0.0, device=device)
+                # # Combine
+                # V_loss += 0.7 * td_loss + 0.3 * mc_loss
+                V_loss += td_loss
 
-    if lambda_world > 0.0:
-        # e.g. just last 10 chunks
-        for EC in all_chunks[-10:]:
-            h    = EC.batch_histories.to(device)
-            obs  = EC.batch_observations.to(device)
-            rew  = EC.batch_rewards.to(device)
-            mask = EC.batch_mask_traj.to(device)
-            actions = EC.batch_actions.to(device)
+            # If there are enough q heads
+            if i < len(q_heads):
+                #3) Q-value TD loss
+                Q_full   = q_heads[i](z)                       # [B, T, A]
 
-            z = belief_rnn(h)  # full gradients allowed
+                Q_loss += loss_q_td(
+                    q_values=Q_full, rewards=rew, actions=actions, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
+                )
 
+            critic_loss += (V_loss + Q_loss)
+
+        # ---------------------------------------------------
+        # WORLD MODEL LOSS
+        # ---------------------------------------------------
+        if lambda_world > 0.0:
             # reward est
             est_rewards = reward_head(z)
-            L_r  = loss_reward(est_rewards, rew, mask, pred_steps=0)
+            L_r  = loss_reward(
+                est_rewards, rew, mask, pred_steps=0
+                )
 
             # 1-step
             pred_z1 = pred_head(z, actions, pred_steps=1)
@@ -129,9 +134,9 @@ def compute_model_loss(
 
             world_loss += (L_r + L_r1 + L_o1 + L_r2 + L_o2)
 
-        world_loss = lambda_world * (world_loss / min(10, len(all_chunks)))
-
     # Total loss is from both critic loss and world loss
+    critic_loss = (lambda_value * critic_loss) / n_chunks
+    world_loss = (lambda_world * world_loss ) / n_chunks
     model_loss = critic_loss + world_loss
 
     return model_loss, {
@@ -149,7 +154,7 @@ def compute_actor_loss(
     Compute actor loss ONLY, using the current (already-updated)
     belief_rnn and critic to define advantages.
     """
-    belief_rnn, actor, critic, q_head, reward_head, pred_head, obs_head = models
+    belief_rnn, actor, v_heads, q_heads, reward_head, pred_head, obs_head = models
 
     # ---------------------------------------------------
     # 1. Latents + basic tensors
@@ -165,10 +170,10 @@ def compute_actor_loss(
     z_det    = z_full.detach()             # don't let actor update the encoder
 
     # state-value critic
-    V_full   = critic(z_full)                            # [B, T]
+    V_full   = v_heads[0](z_full)                            # [B, T]
 
     # action-value critic
-    Q_full   = q_head(z_full)                            # [B, T, A]
+    Q_full   = q_heads[0](z_full)                            # [B, T, A]
 
     # ---------------------------------------------------
     # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
@@ -210,12 +215,14 @@ def compute_actor_loss(
 
     policy_term    = (A_norm * log_probs * mask_actor).sum() / mask_actor.sum()
     entropy_term   = (entropy * mask_actor).sum() / mask_actor.sum()
-    entropy_coeff  = 0.01  # tune this
+    entropy_coeff  = 0.1  # tune this
 
     actor_loss     = -lambda_actor * policy_term - entropy_coeff * entropy_term
 
     return actor_loss, {"actor": actor_loss.item()}
 
+MAX_GRAD_NORM_MODEL = 1.0
+MAX_GRAD_NORM_ACTOR = 1.0
 
 def train_with_chunks(
         env,
@@ -233,7 +240,7 @@ def train_with_chunks(
         plot=False,
     ):
 
-    belief_rnn, actor, critic, q_head, reward_head, pred_head, obs_head = models
+    belief_rnn, actor, v_heads, q_heads, reward_head, pred_head, obs_head = models
 
     # ------------------------
     # Separate optimizers
@@ -241,12 +248,12 @@ def train_with_chunks(
     optimizer_actor = torch.optim.Adam(actor.parameters(), lr=1e-4)
     optimizer_model = torch.optim.Adam(
         list(belief_rnn.parameters()) +
-        list(critic.parameters()) +
+        list(v_heads.parameters()) +
         list(reward_head.parameters()) +
-        list(q_head.parameters()) +
+        list(q_heads.parameters()) +
         list(pred_head.parameters()) +
         list(obs_head.parameters()),
-        lr=1e-3
+        lr=1e-4
     )
 
     memory = initial_chunks[:]
@@ -287,7 +294,6 @@ def train_with_chunks(
 
         for _ in range(world_steps):
             model_loss, model_logs = compute_model_loss(
-                newest_chunk=EC_new,
                 all_chunks=memory,
                 models=models,
                 gamma=gamma,
@@ -297,6 +303,12 @@ def train_with_chunks(
             )
             optimizer_model.zero_grad()
             model_loss.backward()
+            # ---- gradient clipping for model + critics ----
+            nn_utils.clip_grad_norm_(
+                [p for group in optimizer_model.param_groups for p in group['params']],
+                max_norm=MAX_GRAD_NORM_MODEL
+            )
+
             optimizer_model.step()
 
             last_model_logs = model_logs  # keep last for printing
@@ -315,6 +327,13 @@ def train_with_chunks(
             )
             optimizer_actor.zero_grad()
             actor_loss.backward()
+                # ---- gradient clipping for actor ----
+            nn_utils.clip_grad_norm_(
+                [p for group in optimizer_actor.param_groups for p in group['params']],
+                max_norm=MAX_GRAD_NORM_ACTOR
+            )
+
+
             optimizer_actor.step()
 
             last_actor_logs = actor_logs  # last for printing
