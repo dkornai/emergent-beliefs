@@ -1,13 +1,9 @@
+import os
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
-import numpy as np
-import matplotlib.pyplot as plt
-import os
-
-
-
 
 
 
@@ -25,17 +21,6 @@ class BeliefRNN(nn.Module):
         z, _ = self.rnn(history)  # [B, T, H]
 
         return z
-
-
-
-
-
-
-
-
-
-
-
 
 
 class ValueReadout(nn.Module):
@@ -56,32 +41,6 @@ class ValueReadout(nn.Module):
     
     def reveal_w(self, b):
         return self.net(b)
-
-# TD loss function
-def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
-    
-    # calculate the TD target
-    values_next = torch.zeros_like(values)
-    values_next[:, :-1] = values[:, 1:]
-
-    # Zero out bootstrap at terminal state
-    for b, l in enumerate(lengths): 
-        values_next[b, l-1] = 0.0
-
-    # TD target
-    td_target = rewards + (gamma * values_next.detach())
-
-    # Squared TD error
-    td_error = (values - td_target)**2
-
-    # Mask invalid positions and average loss over non-masked values
-    td_error = td_error * mask_traj
-    loss = td_error.sum() / mask_traj.sum()
-
-    return loss
-
-
-
 
 
 
@@ -122,78 +81,6 @@ class QReadout(nn.Module):
         return q_sa
 
 
-def loss_q_td(
-        q_values:   torch.Tensor,  # [B, T, A] = Q(z_t, a)
-        rewards:    torch.Tensor,  # [B, T]    = r_t  (reward at state index t)
-        actions:    torch.Tensor,  # [B, T, A] = one-hot prev_action
-        mask_traj:  torch.Tensor,  # [B, T]    = 1 for valid, 0 for padded
-        lengths:    list,
-        gamma:      float = 1.0
-    ) -> torch.Tensor:
-    """
-    TD(0) loss for Q-values with your indexing convention.
-
-    We train Q(z_t, a_t) using:
-        target_t = r_{t+1} + gamma * max_{a'} Q(z_{t+1}, a')
-    where:
-        - z_t      is at index t
-        - a_t      is stored at actions[:, t+1]
-        - r_{t+1}  is rewards[:, t+1]
-        - z_{t+1}  is at index t+1
-
-    The loss is averaged over all valid transitions (excluding padding).
-    """
-
-    # ----- Slice to transitions -----
-    # Use time dimension T_full, but transitions exist only for t = 0..T-2
-    # We'll index them via "j" = t+1 in the original arrays.
-
-    # Q(z_t, ·) for t=0..T-2
-    q_t_all   = q_values[:, :-1, :]       # [B, T-1, A]
-
-    # a_t is stored at index j = t+1 → slice actions[:, 1:, :]
-    actions_tp1 = actions[:, 1:, :]       # [B, T-1, A]
-
-    # r_{t+1} is at index j = t+1
-    r_tp1    = rewards[:, 1:]             # [B, T-1]
-
-    # Mask for those time indices
-    mask_tp1 = mask_traj[:, 1:]           # [B, T-1]
-
-    # Q(z_{t+1}, ·) at index j = t+1
-    q_next_all = q_values[:, 1:, :]       # [B, T-1, A]
-
-    # ----- Gather Q(z_t, a_t) -----
-    q_sa = torch.sum(q_t_all * actions_tp1, dim=-1)   # [B, T-1]
-
-    # ----- Bootstrap: V_next = max_a' Q(z_{t+1}, a') -----
-    V_next, _ = q_next_all.max(dim=-1)                # [B, T-1]
-
-    # Zero out bootstrap at terminal next-state
-    # For an episode of length L, the last transition is t = L-2
-    # which corresponds to index i = L-2 in these [T-1] tensors.
-    for b, L in enumerate(lengths):
-        if L >= 2:
-            V_next[b, L-2] = 0.0
-
-    # ----- TD target -----
-    td_target = r_tp1 + gamma * V_next.detach()       # [B, T-1]
-
-    # ----- Squared TD error -----
-    td_error = (q_sa - td_target) ** 2                # [B, T-1]
-
-    # Mask out padded positions
-    td_error = td_error * mask_tp1
-
-    # Avoid divide-by-zero if something weird happens
-    denom = mask_tp1.sum()
-    if denom.item() == 0:
-        return td_error.mean() * 0.0  # safe 0-loss
-
-    loss = td_error.sum() / denom
-    return loss
-
-
 
 class RewardReadout(nn.Module):
     """
@@ -208,23 +95,6 @@ class RewardReadout(nn.Module):
         x = self.fc1(z)
         
         return x.squeeze(-1)  # [B, T]
-
-
-def loss_reward(
-        est_rewards:    torch.tensor, 
-        rewards:        torch.tensor, 
-        mask:           torch.tensor,
-        pred_steps:     int
-        ):
-    """
-    Calculate the mean squared reward estimation loss
-    """
-    # Compute the reward loss
-    rewards = rewards[:,pred_steps:]
-    mask    = mask[:,pred_steps:]
-    
-    reward_loss = F.mse_loss(est_rewards, rewards, reduction='none') * mask  # sum over valid time steps
-    return reward_loss.sum() / mask.sum()  # average over non-masked values
 
 
 
@@ -254,7 +124,6 @@ class NextLatentPredictor(nn.Module):
 
 
 
-
 class ObsReadout(nn.Module):
     """
     What is the distribution over observations given the latent (returns logits)
@@ -268,27 +137,7 @@ class ObsReadout(nn.Module):
         
         return x
 
-def loss_obs(
-        est_o_logits    : torch.tensor, 
-        o               : torch.tensor, 
-        mask            : torch.tensor, 
-        pred_steps      : int
-        ):
-    """
-    Categorical cross entropy loss for observation prediction
-    """
 
-    pred_obs_target = o[:, pred_steps:, :]        # o_{t+1}
-    aux_mask        = mask[:, pred_steps:]        # mask for t+1
-
-    # Compute cross-entropy loss
-    logits          = est_o_logits.transpose(1, 2)
-    target_labels   = pred_obs_target.argmax(dim=-1)  # [B, T - pred_steps]
-    aux_loss = F.cross_entropy(logits, target_labels, reduction='none')  # [B, T - pred_steps]
-
-    aux_loss = aux_loss * aux_mask  # Apply mask
-    return aux_loss.sum() / aux_mask.sum()
-    
 
 
 class ActorReadout(nn.Module):
@@ -323,3 +172,66 @@ class ActorReadout(nn.Module):
         dist = Categorical(probs)
         action = dist.sample()
         return action.item(), dist.log_prob(action)
+    
+
+
+class ModelCollection(nn.Module):
+    """
+    Class to hold a collection of models associated with solving the POMDP
+    """
+
+    def __init__(
+            self,
+            latent_dim, 
+            n_actions, 
+            n_obs, 
+            n_value_models, 
+            n_q_models
+        ):
+        super().__init__()
+
+        # ============================================================
+        # Initialise Component Models
+        # ============================================================
+        self.belief_model = BeliefRNN(input_dim=(n_actions+n_obs), latent_dim=latent_dim)
+        self.pred_model   = NextLatentPredictor(latent_dim=latent_dim)
+        self.v_models     = nn.ModuleList([ValueReadout(latent_dim=latent_dim) for _ in range(n_value_models)])
+        self.q_models     = nn.ModuleList([QReadout(latent_dim=latent_dim, num_actions=n_actions) for _ in range(n_q_models)])
+        self.rew_model    = RewardReadout(latent_dim=latent_dim)
+        self.obs_model    = ObsReadout(latent_dim=latent_dim, obs_dim=n_obs)
+        self.actor_model  = ActorReadout(latent_dim=latent_dim, num_actions=n_actions)
+
+    def init_optimizers(self):
+        # Actor optimizer
+        optimizer_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-4)
+
+        # World model optimizer
+        core_params   = list(self.belief_model.parameters()) + list(self.pred_model.parameters())
+        critic_params = list(self.v_models.parameters())     + list(self.q_models.parameters())
+        observ_params = list(self.rew_model.parameters())    + list(self.obs_model.parameters())
+
+        optimizer_model = torch.optim.Adam(
+            [
+                {"params": core_params,   "lr": 2e-4},
+                {"params": critic_params, "lr": 1e-4},  
+                {"params": observ_params, "lr": 1e-3},
+            ]
+        )
+
+        return optimizer_model, optimizer_actor
+
+
+def save_checkpoint(model, epoch, checkpoint_dir="checkpoints", filename=None):
+    """
+    Save the parameters of a given model to the disk for later re-use.
+    """
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    if filename is None:
+        filename = f"checkpoint_epoch_{epoch}.pth"
+    path = os.path.join(checkpoint_dir, filename)
+    
+    checkpoint = {
+        'model_state_dict': model.state_dict(),
+    }
+    torch.save(checkpoint, path)
+    print(f"Saved checkpoint: {path}")
