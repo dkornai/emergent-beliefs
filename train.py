@@ -6,7 +6,7 @@ import matplotlib.pyplot as plt
 import os
 
 from episodes import EpisodeCollection
-from belief_rnn import loss_value_td, loss_obs, loss_reward
+from nn_models import loss_value_td, loss_obs, loss_reward
 
 # Training loop
 def train(
