@@ -1,349 +1,245 @@
+
 import torch
-from episodes import EpisodeCollection
-from belief_rnn import loss_value_td, loss_reward, loss_obs, loss_q_td
+from episodes import EpisodeCollection, compute_success_and_cliff_rates
+from losses import compute_model_loss, compute_actor_loss
 from actor import collect_episodes_actor, ActorPolicyWrapper
 from plot_validate import plot_validate
 import torch.nn.utils as nn_utils
-
-def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
-    """
-    Computes the fraction of episodes that:
-        - reach the goal
-        - fall into the cliff
-        - neither (unexpected termination or wandering)
-    """
-    successes = 0
-    cliffs = 0
-    others = 0
-
-    for ep in EC.episodes:
-
-        final_reward = ep.rewards[-1]
-
-        if final_reward == env.target_reward:
-            successes += 1
-        elif final_reward == env.cliff_reward:
-            cliffs += 1
-        else:
-            others += 1  # Should be implossible in CliffWalk
-
-    total = len(EC.episodes)
-
-    return {
-        "success_rate": successes / total,
-        "cliff_rate": cliffs / total,
-        "other_rate": others / total
-    }
-
-N_CHUNKS_PAST = 10
-
-def compute_model_loss(
-        all_chunks:         list[EpisodeCollection],
-        models,
-        gamma,
-        lambda_value=1.0,
-        lambda_world=1.0,
-        device="cpu"
-    ):
-    """
-    Compute loss that updates:
-        - belief_rnn
-        - critics (value head, q value head)
-        - world model heads (reward_head, pred_head, obs_head)
-
-    Returns:
-        model_loss : scalar tensor
-        log_dict   : {'value': ..., 'world': ...}
-    """
-    belief_rnn, actor, v_heads, q_heads, reward_head, pred_head, obs_head = models
-
-    # Last few chunks from the complete collection, presented in reverse order (first element is most recent)
-    chunks_to_process = list(reversed(all_chunks[-N_CHUNKS_PAST:]))
-    n_chunks = len(chunks_to_process)
+from train_perf_logger import TrainLogger
+from environment import PomdpEnv
+from nn_models import ModelCollection, save_checkpoint
 
 
-    world_loss  = torch.tensor(0.0, device=device)
-    critic_loss = torch.tensor(0.0, device=device)
-
-    for i, EC in enumerate(chunks_to_process):
-        # Move data to device
-        h    = EC.batch_histories.to(device)
-        obs  = EC.batch_observations.to(device)
-        rew  = EC.batch_rewards.to(device)
-        mask = EC.batch_mask_traj.to(device)
-        actions = EC.batch_actions.to(device)
-
-        # Calculate hidden state
-        z = belief_rnn(h)  # full gradients allowed
-
-        # ---------------------------------------------------
-        # VALUE AND Q-VALUE LOSS (CRITIC LOSS)
-        # ---------------------------------------------------
-        if lambda_value > 0.0:
-            V_loss = torch.tensor(0.0, device=device)
-            Q_loss = torch.tensor(0.0, device=device)
-
-            # If there are enough value heads
-            if i < len(v_heads):
-                V_full   = v_heads[i](z)                       # [B, T]
-                
-                # 1) state-value TD loss
-                td_loss = loss_value_td(
-                    values=V_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
-                    )
-                # # 2) State value Monte Carlo loss
-                # with torch.no_grad():
-                #     mc_returns = EC.get_monte_carlo_returns(gamma).to(device)  # [B, T]
-                # mc_sq_error = (V_full - mc_returns)**2      # [B, T]
-                # mc_loss     = (mc_sq_error * mask).sum() / mask.sum()
-
-                # # Combine
-                # V_loss += 0.7 * td_loss + 0.3 * mc_loss
-                V_loss += td_loss
-
-            # If there are enough q heads
-            if i < len(q_heads):
-                #3) Q-value TD loss
-                Q_full   = q_heads[i](z)                       # [B, T, A]
-
-                Q_loss += loss_q_td(
-                    q_values=Q_full, rewards=rew, actions=actions, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
-                )
-
-            critic_loss += (V_loss + Q_loss)
-
-        # ---------------------------------------------------
-        # WORLD MODEL LOSS
-        # ---------------------------------------------------
-        if lambda_world > 0.0:
-            # reward est
-            est_rewards = reward_head(z)
-            L_r  = loss_reward(
-                est_rewards, rew, mask, pred_steps=0
-                )
-
-            # 1-step
-            pred_z1 = pred_head(z, actions, pred_steps=1)
-            L_r1 = loss_reward(reward_head(pred_z1), rew, mask, pred_steps=1)
-            L_o1 = loss_obs(obs_head(pred_z1), obs, mask, pred_steps=1)
-
-            # 2-step
-            pred_z2 = pred_head(pred_z1, actions, pred_steps=2)
-            L_r2 = loss_reward(reward_head(pred_z2), rew, mask, pred_steps=2)
-            L_o2 = loss_obs(obs_head(pred_z2), obs, mask, pred_steps=2)
-
-            world_loss += (L_r + L_r1 + L_o1 + L_r2 + L_o2)
-
-    # Total loss is from both critic loss and world loss
-    critic_loss = (lambda_value * critic_loss) / n_chunks
-    world_loss = (lambda_world * world_loss ) / n_chunks
-    model_loss = critic_loss + world_loss
-
-    return model_loss, {
-        "value": critic_loss.item(),
-        "world": world_loss.item(),
-    }
-
-def compute_actor_loss(
-        newest_chunk: EpisodeCollection,
-        models,
-        lambda_actor=1.0,
-        device="cpu"
-    ):
-    """
-    Compute actor loss ONLY, using the current (already-updated)
-    belief_rnn and critic to define advantages.
-    """
-    belief_rnn, actor, v_heads, q_heads, reward_head, pred_head, obs_head = models
-
-    # ---------------------------------------------------
-    # 1. Latents + basic tensors
-    # ---------------------------------------------------
-
-    h_new    = newest_chunk.batch_histories.to(device)
-    mask_new = newest_chunk.batch_mask_traj.to(device)
-    rew_new  = newest_chunk.batch_rewards.to(device)
-    act_new  = newest_chunk.batch_actions.to(device)
-
-    # Compute latents with *current* belief_rnn
-    z_full   = belief_rnn(h_new)           # [B, T, H]
-    z_det    = z_full.detach()             # don't let actor update the encoder
-
-    # state-value critic
-    V_full   = v_heads[0](z_full)                            # [B, T]
-
-    # action-value critic
-    Q_full   = q_heads[0](z_full)                            # [B, T, A]
-
-    # ---------------------------------------------------
-    # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
-    # ---------------------------------------------------
-
-    z_actor        = z_det[:, :-1, :]        # [B, T-1, H], states z_0..z_{T-2}
-    actions_actor  = act_new[:, 1:, :]       # [B, T-1, A], actions a_0..a_{T-2}
-    mask_actor     = mask_new[:, 1:]         # [B, T-1]
-
-    # Policy at those states
-    probs_actor    = actor(z_actor)          # [B, T-1, A]
-    log_probs_all  = torch.log(probs_actor + 1e-8)
-    log_probs      = torch.sum(actions_actor * log_probs_all, dim=-1)  # [B, T-1]
-
-    # Q(z_t, A_t) for all actions
-    Q_t_all        = Q_full[:, :-1, :]                                      # [B, T-1, A]
-    Q_t_all        = Q_t_all * mask_actor.unsqueeze(-1)                     # [B, T-1, A]
-    
-    # Q(z_t, a_t) for the specific action
-    Q_sa           = torch.sum(Q_t_all.detach() * actions_actor, dim=-1)    # [B, T-1]
-
-    # V(z_t)
-    V_actor        = V_full[:, :-1].detach()  # [B, T-1]
-    V_actor        = V_actor * mask_actor
-
-    # Advantage
-    A_actor        = Q_sa - V_actor          # [B, T-1]
-    A_actor        = A_actor * mask_actor
-
-    # Normalise advantages over valid entries
-    valid_mask     = (mask_actor == 1.0)
-    valid_adv      = A_actor[valid_mask]
-    adv_mean       = valid_adv.mean()
-    #adv_std        = valid_adv.std() + 1e-8
-    A_norm         = (A_actor - adv_mean)# / adv_std
-
-    # entropy bonus
-    entropy        = -(probs_actor * log_probs_all).sum(dim=-1)  # [B, T-1]
-
-    policy_term    = (A_norm * log_probs * mask_actor).sum() / mask_actor.sum()
-    entropy_term   = (entropy * mask_actor).sum() / mask_actor.sum()
-    entropy_coeff  = 0.1  # tune this
-
-    actor_loss     = -lambda_actor * policy_term - entropy_coeff * entropy_term
-
-    return actor_loss, {"actor": actor_loss.item()}
-
-MAX_GRAD_NORM_MODEL = 1.0
-MAX_GRAD_NORM_ACTOR = 1.0
 
 def train_with_chunks(
-        env,
-        models,
-        initial_chunks,
+        env             : PomdpEnv,
+        models          : ModelCollection,
+        optimizers,
         num_new_chunks=50,
-        episodes_per_chunk=10,
+        ep_per_chunk=10,
         gamma=0.95,
         actor_steps=10,
         world_steps=20,
         lambda_actor=1.0,
         lambda_value=1.0,
         lambda_world=1.0,
+        n_chunks_past=10,
         device="cuda",
-        plot=False,
+        save_checkp=False
     ):
+    
+    # Initialise loggers for agent performance and train losses
+    logs_agent_perf = TrainLogger()
+    logs_train_loss = TrainLogger()
 
-    belief_rnn, actor, v_heads, q_heads, reward_head, pred_head, obs_head = models
+    # Optionally save belief RNN
+    if save_checkp:
+        save_checkpoint(models.belief_rnn, "init", checkpoint_dir=f"checkpoints", filename=None)
 
-    # ------------------------
-    # Separate optimizers
-    # ------------------------
-    optimizer_actor = torch.optim.Adam(actor.parameters(), lr=1e-4)
-    optimizer_model = torch.optim.Adam(
-        list(belief_rnn.parameters()) +
-        list(v_heads.parameters()) +
-        list(reward_head.parameters()) +
-        list(q_heads.parameters()) +
-        list(pred_head.parameters()) +
-        list(obs_head.parameters()),
-        lr=1e-4
-    )
 
-    memory = initial_chunks[:]
+    # Initialise memory
+    memory = []
 
+    # Iterate through new chunks
     for chunk_idx in range(num_new_chunks):
-        # ============================================================
-        # PHASE 0: Collect episodes on-policy with actor
-        # ============================================================
-        actor_policy = ActorPolicyWrapper(belief_rnn, actor, device=device)
-        eps = collect_episodes_actor(env, actor_policy, num_episodes=episodes_per_chunk)
-
-        if plot:
-            plot_validate(models, eps[0:1], env, None, None)
-
-        EC_new = EpisodeCollection(eps)
-        memory.append(EC_new)
+        # Generate new chunk and append it to memories
+        memory = generate_chunks(
+            models=models, 
+            memory=memory, 
+            env=env, 
+            ep_per_chunk=ep_per_chunk,
+            device=device
+            )
         
-
-        # ----------------------------
-        # Logging: mean episodic return, length
-        # ----------------------------
-        with torch.no_grad():
-            returns_tensor = EC_new.get_monte_carlo_returns(gamma)
-            episode_returns = returns_tensor[:, 0]
-            mean_return = episode_returns.mean().item()
-            mean_length = EC_new.batch_mask_traj.sum() / episodes_per_chunk
-
-        metrics = compute_success_and_cliff_rates(EC_new, env)
-        print(f"[Chunk {chunk_idx}] success={metrics['success_rate']:.2f}, "
-              f"cliff={metrics['cliff_rate']:.2f}, "
-              f"mean_return={mean_return:.3f}, mean_len={mean_length:.3f}")
-
-        # ============================================================
-        # PHASE 1: update world model + critic *first*
-        # ============================================================
-
-        last_model_logs = {"value": 0.0, "world": 0.0}
-
-        for _ in range(world_steps):
-            model_loss, model_logs = compute_model_loss(
-                all_chunks=memory,
-                models=models,
-                gamma=gamma,
-                lambda_value=lambda_value,
-                lambda_world=lambda_world,
-                device=device
-            )
-            optimizer_model.zero_grad()
-            model_loss.backward()
-            # ---- gradient clipping for model + critics ----
-            nn_utils.clip_grad_norm_(
-                [p for group in optimizer_model.param_groups for p in group['params']],
-                max_norm=MAX_GRAD_NORM_MODEL
+        # Track agent performance in the new chunk
+        logs_agent_perf = chunk_metrics(
+            EC=memory[-1], 
+            env=env,
+            gamma=gamma,
+            logs_agent_perf=logs_agent_perf
             )
 
-            optimizer_model.step()
-
-            last_model_logs = model_logs  # keep last for printing
-
-        # ============================================================
-        # PHASE 2: update actor using *updated* latents & critic
-        # ============================================================
-        last_actor_logs = {"actor": 0.0}
-
-        for _ in range(actor_steps):
-            actor_loss, actor_logs = compute_actor_loss(
-                newest_chunk=EC_new,
-                models=models,
-                lambda_actor=lambda_actor,
-                device=device
-            )
-            optimizer_actor.zero_grad()
-            actor_loss.backward()
-                # ---- gradient clipping for actor ----
-            nn_utils.clip_grad_norm_(
-                [p for group in optimizer_actor.param_groups for p in group['params']],
-                max_norm=MAX_GRAD_NORM_ACTOR
+        # Optimise world model and agent
+        models, world_metrics, agent_metrics = optimisation_step(
+            memory=memory,
+            models=models,
+            optimizers=optimizers,
+            gamma=gamma,
+            n_chunks_past=n_chunks_past,
+            lambda_actor=lambda_actor,
+            lambda_value=lambda_value,
+            lambda_world=lambda_world,
+            world_steps=world_steps,
+            actor_steps=actor_steps,
+            device=device
             )
 
+        # Track world model performance
+        logs_train_loss = optim_metrics(
+            world_logs=world_metrics, 
+            actor_logs=agent_metrics,
+            logs_train_loss = logs_train_loss
+            )
 
-            optimizer_actor.step()
+        # Optionally save belief RNN
+        if save_checkp:
+            save_checkpoint(models.belief_rnn, chunk_idx, checkpoint_dir=f"checkpoints", filename=None)
 
-            last_actor_logs = actor_logs  # last for printing
+    # Save logs
+    logs_agent_perf.save_csv("agent_perf.csv")
+    logs_train_loss.save_csv("train_loss.csv")
+    
 
-        print(
-            f"actor={last_actor_logs['actor']:.3f}, "
-            f"value={last_model_logs['value']:.3f}, world={last_model_logs['world']:.3f}, "
+
+
+def generate_chunks(
+        models          : ModelCollection,
+        memory          : list[EpisodeCollection],
+        env             : PomdpEnv,
+        ep_per_chunk    : int,
+        device
+        ):
+    """
+    Generate a new chunk of episodes from the current nn policy
+    """
+
+    # Wrap the nn actor to be compatible with PomdpEnv
+    actor_policy = ActorPolicyWrapper(belief_rnn=models.belief_model, actor=models.actor_model, device=device)
+    
+    # Collect episodes using actor
+    eps = collect_episodes_actor(env, actor_policy, num_episodes=ep_per_chunk)
+    
+    # Add new chunk to memories 
+    memory.append(EpisodeCollection(eps))
+
+    return memory
+
+
+
+def chunk_metrics(
+        EC              : EpisodeCollection,
+        env             : PomdpEnv,
+        gamma           : float,
+        logs_agent_perf : TrainLogger
+        ):
+    """
+    Measure various metrics of agent performance in a chunk, print, and log them. 
+    """
+    
+    with torch.no_grad():
+    # Mean and std. of return
+        returns_tensor = EC.get_monte_carlo_returns(gamma)
+        episode_returns = returns_tensor[:, 0]
+        mean_return = episode_returns.mean().item()
+        std_return = episode_returns.std().item()
+        
+    # Mean length    
+        mean_length = EC.batch_mask_traj.sum().item() / EC.B
+
+    # Success rate
+    success_rate = compute_success_and_cliff_rates(EC=EC, env=env)
+
+    metrics = {}
+    metrics['return_mean']  = float(mean_return)
+    metrics['return_std']   = float(std_return)
+    metrics['traj_len_mean']= float(mean_length)
+    metrics['success_rate'] = float(success_rate)
+
+    # Print
+    print(f"success_rate={metrics['success_rate']:.2f}, traj_len_mean={metrics['traj_len_mean']:.2f},"
+          f"return_mean={metrics['return_mean']:.2f}, return_std={metrics['return_std']:.2f}")
+
+    # Append to logs
+    logs_agent_perf.append(metrics)
+
+    return logs_agent_perf
+
+
+
+def optimisation_step(
+        memory          : list[EpisodeCollection],
+        models          : ModelCollection,
+        optimizers,
+        gamma           : float,
+        n_chunks_past   : int,
+        lambda_actor    : float,
+        lambda_value    : float,
+        lambda_world    : float,
+        world_steps     : int,
+        actor_steps     : int,
+        device
+        ):
+    """
+    Optimise the world model and actor on one chunk of data.
+    """
+    
+    MAX_GRAD_NORM_MODEL = 1.0
+    MAX_GRAD_NORM_ACTOR = 1.0
+    
+    # Unpack optimisers
+    optimizer_model, optimizer_actor = optimizers
+
+    # ============================================================
+    # PHASE 1: update world model + critic *first*
+    # ============================================================
+    for _ in range(world_steps):
+        world_loss, world_logs = compute_model_loss(
+            all_chunks=memory,
+            models=models,
+            gamma=gamma,
+            lambda_value=lambda_value,
+            lambda_world=lambda_world,
+            n_chunks_past=n_chunks_past,
+            device=device
         )
 
-    print("Training complete!")
-    return models
+        optimizer_model.zero_grad()
+        world_loss.backward()
+        # ---- gradient clipping for model + critics ----
+        nn_utils.clip_grad_norm_(
+            [p for group in optimizer_model.param_groups for p in group['params']],
+            max_norm=MAX_GRAD_NORM_MODEL
+        )
+        optimizer_model.step()
+
+    # ============================================================
+    # PHASE 2: update actor using *updated* latents & critic
+    # ============================================================
+    for _ in range(actor_steps):
+        actor_loss, actor_logs = compute_actor_loss(
+            newest_chunk=memory[-1],
+            models=models,
+            lambda_actor=lambda_actor,
+            device=device
+        )
+        
+        optimizer_actor.zero_grad()
+        actor_loss.backward()
+        # ---- gradient clipping for actor ----
+        nn_utils.clip_grad_norm_(
+            [p for group in optimizer_actor.param_groups for p in group['params']],
+            max_norm=MAX_GRAD_NORM_ACTOR
+        )
+        optimizer_actor.step()
+
+    return models, world_logs, actor_logs
 
 
+
+def optim_metrics(
+        world_logs      : dict, 
+        actor_logs      : dict, 
+        logs_train_loss : TrainLogger
+        ):
+    metrics = {}
+    metrics['value_loss']   = world_logs['value']
+    metrics['pred_loss']    = world_logs['world']
+    metrics['actor_loss']   = actor_logs['actor']
+
+    # Print
+    print(f"value_loss={metrics['value_loss']:.2f}, pred_loss={metrics['pred_loss']:.2f},  actor_loss={metrics['actor_loss']:.2f}")
+
+    # Append to logs
+    logs_train_loss.append(metrics)
+
+    return logs_train_loss
