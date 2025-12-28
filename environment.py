@@ -102,8 +102,10 @@ class CliffWalk(PomdpEnv):
         self.m = m # Number of columns
         self.state_dim = n * m # Total number of states
         
+        
         self.self_transition_prob = self_transition_prob # Probability of staying in the same state
         self.action_space = [0, 1, 2, 3] # left, up, right, down
+        self.action_dim = 4
         self.gamma = gamma # Discount factor
 
         self.generic_reward = generic_reward

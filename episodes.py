@@ -402,3 +402,29 @@ class HistoryValueTable:
 
     def __repr__(self):
         return f"HistoryValueTable(num_histories={len(self)})"
+    
+def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
+    """
+    For Cliffwalk style tasks, computes the fraction of episodes that:
+        - reach the goal
+        - fall into the cliff
+        - neither (unexpected termination or wandering)
+    """
+    successes = 0
+    cliffs = 0
+    others = 0
+
+    for ep in EC.episodes:
+
+        final_reward = ep.rewards[-1]
+
+        if final_reward == env.target_reward:
+            successes += 1
+        elif final_reward == env.cliff_reward:
+            cliffs += 1
+        else:
+            others += 1  # Should be implossible in CliffWalk
+
+    success_rate = successes / EC.B
+    
+    return success_rate
