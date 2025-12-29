@@ -34,14 +34,16 @@ def train_with_chunks(
 
     # Optionally save belief RNN
     if save_checkp:
-        save_checkpoint(models.belief_rnn, "init", checkpoint_dir=f"checkpoints", filename=None)
+        save_checkpoint(models.belief_model, 0, checkpoint_dir=f"checkpoints", filename=None)
 
 
     # Initialise memory
     memory = []
 
     # Iterate through new chunks
-    for chunk_idx in range(num_new_chunks):
+    for chunk_idx in range(1, num_new_chunks+2):
+        print(f"[ Chunk {chunk_idx}]")
+
         # Generate new chunk and append it to memories
         memory = generate_chunks(
             models=models, 
@@ -82,14 +84,13 @@ def train_with_chunks(
             )
 
         # Optionally save belief RNN
-        if save_checkp:
-            save_checkpoint(models.belief_rnn, chunk_idx, checkpoint_dir=f"checkpoints", filename=None)
+        if (chunk_idx - 1) % 10 == 0:
+            if save_checkp:
+                save_checkpoint(models.belief_model, chunk_idx, filename=None)
 
     # Save logs
     logs_agent_perf.save_csv("agent_perf.csv")
     logs_train_loss.save_csv("train_loss.csv")
-    
-
 
 
 def generate_chunks(
@@ -146,7 +147,7 @@ def chunk_metrics(
     metrics['success_rate'] = float(success_rate)
 
     # Print
-    print(f"success_rate={metrics['success_rate']:.2f}, traj_len_mean={metrics['traj_len_mean']:.2f},"
+    print(f"success_rate={metrics['success_rate']:.2f}, traj_len_mean={metrics['traj_len_mean']:.2f}, "
           f"return_mean={metrics['return_mean']:.2f}, return_std={metrics['return_std']:.2f}")
 
     # Append to logs
@@ -173,7 +174,7 @@ def optimisation_step(
     Optimise the world model and actor on one chunk of data.
     """
     
-    MAX_GRAD_NORM_MODEL = 1.0
+    MAX_GRAD_NORM_MODEL = 2.0
     MAX_GRAD_NORM_ACTOR = 1.0
     
     # Unpack optimisers

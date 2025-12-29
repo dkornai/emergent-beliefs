@@ -6,10 +6,10 @@ DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 from environment import CliffWalk
 from nn_models import ModelCollection
 from train_chunk import train_with_chunks
+from train_belief import belief_test
 
 # Import parameters from config file
 import config
-
 
 CURRENT_DIR = os.getcwd()
 os.mkdir(f"{config.OUTPUT_DIR}")
@@ -19,7 +19,7 @@ def experiment(rep):
     os.mkdir(f"{rep}")
     os.chdir(f"{rep}")
     
-    print("\n\n>>>>>>>>>>>>  Starting Process <<<<<<<<<<<<<<\n")
+    print("\n\n>>>  Starting Process <<<\n")
     # 1) Initialise the POMDP environment
     env = CliffWalk(
         n                       = config.N, 
@@ -46,7 +46,8 @@ def experiment(rep):
     
 
     # 3) Run the training loop 
-    models = train_with_chunks(
+    print("\n> Training started!")
+    train_with_chunks(
         env                     = env,
         models                  = models,
         optimizers              = optimizers,
@@ -61,8 +62,13 @@ def experiment(rep):
         device                  = DEVICE,
         save_checkp             = config.SAVE_PARAM
         )
+    print("> Training complete!")
+    
+    # 4) Analyse the belief states
+    print("\n> Belief analysis started!")
+    belief_test(config)
+    print("> Belief analysis complete!")
 
-    print("Training complete!")
     os.chdir("..")
 
 # Run the 

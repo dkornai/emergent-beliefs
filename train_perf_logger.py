@@ -55,4 +55,6 @@ class TrainLogger:
         Save the stored data as a CSV file using pandas DataFrame conversion.
         """
         df = self.to_dataframe()
-        df.to_csv(path, index=False)
+        df.index = df.index + 1
+        df.index.name = "index"
+        df.to_csv(path, index=True)

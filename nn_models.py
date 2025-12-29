@@ -212,7 +212,7 @@ class ModelCollection(nn.Module):
 
         optimizer_model = torch.optim.Adam(
             [
-                {"params": core_params,   "lr": 2e-4},
+                {"params": core_params,   "lr": 1e-4},
                 {"params": critic_params, "lr": 1e-4},  
                 {"params": observ_params, "lr": 1e-3},
             ]
@@ -221,7 +221,7 @@ class ModelCollection(nn.Module):
         return optimizer_model, optimizer_actor
 
 
-def save_checkpoint(model, epoch, checkpoint_dir="checkpoints", filename=None):
+def save_checkpoint(model, epoch, checkpoint_dir='checkpoints', filename=None):
     """
     Save the parameters of a given model to the disk for later re-use.
     """
