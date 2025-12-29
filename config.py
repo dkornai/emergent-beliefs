@@ -1,15 +1,15 @@
 """Hyperparameters"""
 
-OUTPUT_DIR = 'results/test'
+OUTPUT_DIR = 'results/test4'
 
 # How much and what type of data to collect
-SAVE_PARAM = False
-REPLICATES = 3
+SAVE_PARAM = True
+REPLICATES = 25
 
 # Model collection 
 RNN_HIDDEN = 64
-N_VALUE_MODELS = 1
-N_Q_MODELS = 1
+N_VALUE_MODELS = 10
+N_Q_MODELS = 10
 
 # Environment
 N = 3
@@ -29,4 +29,4 @@ ACTOR_STEPS  = 10
 WORLD_STEPS  = 50
 LAMBDA_ACTOR = 1.0
 LAMBDA_VALUE = 1.0
-LAMBDA_WORLD = 1.0
+LAMBDA_WORLD = 0.5
