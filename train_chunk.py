@@ -3,7 +3,6 @@ import torch
 from episodes import EpisodeCollection, compute_success_and_cliff_rates
 from losses import compute_model_loss, compute_actor_loss
 from actor import collect_episodes_actor, ActorPolicyWrapper
-from plot_validate import plot_validate
 import torch.nn.utils as nn_utils
 from train_perf_logger import TrainLogger
 from environment import PomdpEnv
