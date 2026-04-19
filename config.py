@@ -6,19 +6,14 @@ OUTPUT_DIR = 'results/res_sm_1'
 SAVE_PARAM = True
 REPLICATES = 1
 
+# Environment type
+ENV_TYPE = 'cliffwalk'
+GAMMA = 0.98
+
 # Model collection 
 RNN_HIDDEN = 64
-N_VALUE_MODELS = 0
-N_Q_MODELS = 0
-
-# Environment
-N = 3
-M = 5
-SELF_TRANISTION = 0.1
-GENERIC_REWARD  = -1.0
-CLIFF_REWARD    = -10.0
-TARGET_REWARD   = 10.0
-GAMMA           = 0.98
+N_VALUE_MODELS = 1
+N_Q_MODELS = 1
 
 # Data Gathering
 EPISODES_PER_CHUNK  = 100

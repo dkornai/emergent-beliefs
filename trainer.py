@@ -3,7 +3,7 @@ import os
 import torch
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-from environment import CliffWalk
+from environment import CliffWalk, cw_default_params_dict
 from nn_models import ModelCollection
 from train_chunk import train_with_chunks
 from train_belief import belief_test
@@ -21,22 +21,17 @@ def experiment(rep):
     
     print("\n\n>>>  Starting Process <<<\n")
     # 1) Initialise the POMDP environment
-    env = CliffWalk(
-        n                       = config.N, 
-        m                       = config.M, 
-        self_transition_prob    = config.SELF_TRANISTION,
-        gamma                   = config.GAMMA,
-        generic_reward          = config.GENERIC_REWARD,
-        cliff_reward            = config.CLIFF_REWARD,
-        target_reward           = config.TARGET_REWARD
-        )  
+    if config.ENV_TYPE == 'cliffwalk':
+        env = CliffWalk(**cw_default_params_dict)
     
 
     # 2) Initialise the model and optimizers
     models = ModelCollection(
         latent_dim              = config.RNN_HIDDEN,
-        n_actions               = env.action_dim ,
-        n_obs                   = env.obs_dim,
+        dim_actions             = env.action_dim ,
+        actions_discrete        = env.actions_discrete,
+        dim_obs                 = env.obs_dim,
+        obs_discrete            = env.obs_discrete,
         n_value_models          = config.N_VALUE_MODELS,
         n_q_models              = config.N_Q_MODELS
         )

@@ -4,7 +4,7 @@ import numpy as np
 import torch
 import pandas as pd
 
-from environment import CliffWalk
+from environment import CliffWalk, cw_default_params_dict
 from episodes import collect_episodes, EpisodeCollection
 from belief_decoders import NonLinBeliefDecoder, LinBeliefDecoder, decode_training, decode_visualisation, estimate_entropy
 from nn_models import BeliefRNN
@@ -15,14 +15,14 @@ def belief_test(config):
     # ---------------------------------------------------
     # Init POMDP env, and collect data
     # ---------------------------------------------------
-    cliff = CliffWalk(n=config.N, m=config.M, self_transition_prob=config.SELF_TRANISTION, gamma=config.SELF_TRANISTION)
+    cliff = CliffWalk(**cw_default_params_dict)
     policy = cliff.get_optimal_policy(epsilon=0.3)
 
     # Collect episodes from the environment using the target policy
     episode_list = collect_episodes(cliff, policy, num_episodes=5000)
 
     episodes = EpisodeCollection(episode_list)
-
+    print("collected test episodes")
 
     # ---------------------------------------------------
     # Calculate Belief Entropy

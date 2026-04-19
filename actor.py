@@ -1,7 +1,8 @@
 import torch
 import numpy as np
-from torch.distributions import Categorical
+
 from episodes import Episode
+from nn_models import BeliefRNN, ActorReadout
 
 class ActorPolicyWrapper:
     """
@@ -10,7 +11,7 @@ class ActorPolicyWrapper:
     Performs online GRU filtering, sampling stochastic actions.
     """
 
-    def __init__(self, belief_rnn, actor, device="cpu"):
+    def __init__(self, belief_rnn: BeliefRNN, actor: ActorReadout, device="cpu"):
         self.belief_rnn = belief_rnn
         self.actor = actor
         self.device = device
@@ -41,15 +42,10 @@ class ActorPolicyWrapper:
         z_t, self.hidden = self.belief_rnn.rnn(inp, self.hidden)
         z_t = z_t.squeeze(0).squeeze(0)  # → [latent_dim]
 
-        # 3. Actor produces probability distribution
-        probs = self.actor(z_t.unsqueeze(0)).squeeze(0)   # [A]
-        dist = Categorical(probs)
+        # 3. Sample action from Actor MLP
+        action = self.actor.sample_action(z_t)  # numpy array, either one-hot or raw values
 
-        # 4. Sample stochastic action
-        action = dist.sample()
-        logp = dist.log_prob(action)
-
-        return action.item(), logp.item()
+        return action
 
 
 def collect_episodes_actor(env, actor_policy: ActorPolicyWrapper, num_episodes: int):
@@ -75,11 +71,8 @@ def collect_episodes_actor(env, actor_policy: ActorPolicyWrapper, num_episodes: 
             ep.add_step(state, observation, reward, prev_action, belief)
 
             # Query actor policy wrapper
-            action, _logp = actor_policy(observation, prev_action)
-
-            # Make one-hot
-            prev_action = np.zeros(len(env.action_space))
-            prev_action[action] = 1.0
+            action = actor_policy(observation, prev_action)
+            prev_action = action  # Update prev_action for next step
 
             # Step env
             state, observation, reward, belief, done = env.step(action)

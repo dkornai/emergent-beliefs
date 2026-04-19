@@ -42,10 +42,11 @@ class PomdpEnv():
 
         return np.round(Q_pi, 2)
     
-    def update_state(self, prev_state: np.ndarray, action_i:int) -> int:
+    def update_state(self, prev_state: np.ndarray, action_oh:np.ndarray) -> int:
         """
         Update state via s_t ~ p(s_t | s_{t-1}, a_{t-1})
         """
+        action_i = np.argmax(action_oh)
         state_probs = prev_state @ self.tp_matrix[action_i]
         state_index = np.random.choice(self.state_dim, p=state_probs)
 
@@ -66,29 +67,30 @@ class PomdpEnv():
         """
         return self.reward_vec[state_i]
     
-    def update_belief(self, prev_belief_state: np.ndarray, obs_i:int, action: int) -> np.ndarray:
+    def update_belief(self, prev_belief_state: np.ndarray, obs_i:int, action_oh: np.ndarray) -> np.ndarray:
         """
         Belief update is via:
          p(x_t|b_t) propto p(o_t | s_t) \sum_{s_{t-1}} p(s_t | s_{t-1}, a_{t-1}) p(x_{t-1}|b_{t-1})
         """        
-        belief_state = prev_belief_state @ self.tp_matrix[action]
+        action_i = np.argmax(action_oh)
+        belief_state = prev_belief_state @ self.tp_matrix[action_i]
         belief_state *= self.obs_matrix[:, obs_i]
         belief_state /= np.sum(belief_state)
         
         return belief_state
     
-    def interact(self, prev_state, prev_belief, action_i:int) -> tuple[int, float, int, np.ndarray]:
+    def interact(self, prev_state, prev_belief, action_oh: np.ndarray) -> tuple[int, float, int, np.ndarray]:
         """
         Take a step in the environment with the given action.
         """
-        new_state_i = self.update_state(prev_state, action_i)
+        new_state_i = self.update_state(prev_state, action_oh)
         reward      = self.yield_reward(new_state_i)
         obs_i       = self.yield_observation(new_state_i)
-        new_belief  = self.update_belief(prev_belief, obs_i, action_i)
+        new_belief  = self.update_belief(prev_belief, obs_i, action_oh)
         
         return new_state_i, obs_i, reward, new_belief
     
-    def step(self, action_i:int):
+    def step(self, action_oh: np.ndarray):
         raise NotImplementedError("This method should be implemented in a subclass.")
 
 
@@ -96,7 +98,7 @@ class CliffWalk(PomdpEnv):
     """
     Partially Observable Cliff Walk Environment
     """
-    def __init__(self, n=3, m=5, self_transition_prob=0.2, gamma=0.9, generic_reward=0.0, cliff_reward=-10.0, target_reward=10.0):
+    def __init__(self, n=3, m=5, self_transition_prob=0.2, generic_reward=0.0, cliff_reward=-10.0, target_reward=10.0):
         
         self.n = n # Number of rows
         self.m = m # Number of columns
@@ -106,7 +108,7 @@ class CliffWalk(PomdpEnv):
         self.self_transition_prob = self_transition_prob # Probability of staying in the same state
         self.action_space = [0, 1, 2, 3] # left, up, right, down
         self.action_dim = 4
-        self.gamma = gamma # Discount factor
+        self.gamma = 0.98 # Discount factor
 
         self.generic_reward = generic_reward
         self.cliff_reward   = cliff_reward
@@ -121,6 +123,9 @@ class CliffWalk(PomdpEnv):
         self.obs_matrix  = self.init_observation_matrix()
 
         self.obs_dim = self.obs_matrix.shape[1]  # Number of unique observations
+
+        self.actions_discrete = True
+        self.obs_discrete = True
 
         self.reset()
 
@@ -266,7 +271,7 @@ class CliffWalk(PomdpEnv):
         
         return self.state, observation, reward, self.belief_state, self.done
 
-    def step(self, action_i:int) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, bool]:
+    def step(self, action_oh:np.ndarray) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, bool]:
         """
         Take a step in the environment with the given action.
         """
@@ -274,7 +279,7 @@ class CliffWalk(PomdpEnv):
             raise RuntimeError("Episode has reached termination state. Please reset env before taking a step.")
         
         # Update state, reward, observation, and belief state
-        new_state_i, obs_i, reward, new_belief = self.interact(self.state, self.belief_state, action_i)
+        new_state_i, obs_i, reward, new_belief = self.interact(self.state, self.belief_state, action_oh)
         
         self.state  = onehot(self.state_dim, new_state_i)
         self.belief_state = new_belief
@@ -304,183 +309,297 @@ class CliffWalk(PomdpEnv):
         axs[1].invert_yaxis()
         plt.show()
 
+# DEFAULT ENVIRONMENT PARAMETERS (for easy access in other files)
+cw_default_params_dict = {
+    "n": 3,
+    "m": 5,
+    "self_transition_prob": 0.1,
+    "generic_reward": -1.0,
+    "cliff_reward": -10.0,
+    "target_reward": 10.0
+}
 
-class InfiniteWalk(PomdpEnv):
+
+
+"""
+Environment wrapper for the dm_control Reacher task.
+
+Wraps the dm_control suite reacher into an interface compatible with the
+emergent-beliefs training loop. Key differences from the discrete PomdpEnv:
+
+  - Observations are continuous float vectors (not one-hot).
+  - Actions are continuous float vectors in [-1, 1] (not discrete indices).
+  - There is no exact Bayesian belief; the "true state" (qpos, qvel) is
+    recorded instead and used as the decoding target.
+  - Episodes are fixed-length (no terminal absorbing states).
+
+dm_control reacher specs (easy / hard):
+  Observations (flattened):
+    - position : cos/sin of 2 joint angles → 4 floats
+    - to_target : 2D vector from finger to target → 2 floats
+    - velocity  : 2 joint angular velocities → 2 floats
+    Total obs_dim = 8   (when all three keys are included; 6 without velocity
+                         — see `include_velocity` flag)
+
+  Actions:
+    - 2 joint torques, each in [-1, 1]
+    Total action_dim = 2
+
+  True state (decoding target, always includes velocity):
+    - qpos : 2 joint angles                       → 2 floats
+    - qvel : 2 joint angular velocities            → 2 floats
+    - (optional) target (x, y) position            → 2 floats
+    Total state_dim = 4  (joints only) or 6 (joints + target pos)
+    Which components to include is controlled by `state_components`.
+
+  Return signature (mirrors CliffWalk):
+    reset() → (state, observation, reward, state, done)
+    step(a) → (state, observation, reward, state, done)
+    The true state occupies both the first and fourth (belief_state) slots.
+
+  Reward:
+    - Continuous scalar in [0, 1] based on distance to target.
+"""
+
+import numpy as np
+
+try:
+    from dm_control import suite
+except ImportError:
+    raise ImportError(
+        "dm_control is required for ReacherEnv. "
+        "Install via: pip install dm_control"
+    )
+
+
+class ReacherEnv:
     """
-    Partially Observable Cliff Walk Environment
+    Wraps dm_control reacher into the interface expected by the
+    emergent-beliefs training loop.
+
+    The public API mirrors the discrete PomdpEnv / CliffWalk:
+        reset()  → (state, observation, reward, state, done)
+        step(a)  → (state, observation, reward, state, done)
+
+    The return signature preserves the 5-tuple layout of CliffWalk's
+    (state, observation, reward, belief_state, done).  Since there is no
+    exact Bayesian belief for this environment, the true physics state
+    appears in both the first and fourth positions.
     """
-    def __init__(self, self_transition_prob=0.2):
-        self.n = 4 # Number of rows
-        self.m = 4
-        self.state_dim = 16 # Total number of states
-        
-        self.self_transition_prob = self_transition_prob # Probability of staying in the same state
-        self.action_space = [0, 1, 2, 3] # left, up, right, down
 
-        self.state = None
-        self.belief_state = None
-        self.done = False
-        
-        self.tp_matrix   = self.init_tp_matrix()
-        self.reward_vec  = self.init_reward_vec()
-        self.obs_matrix  = self.init_observation_matrix()
-
-        self.obs_dim = self.obs_matrix.shape[1]  # Number of unique observations
-
-        self.reset()
-
-    def init_tp_matrix(self) -> np.ndarray:
+    def __init__(
+        self,
+        task: str = "easy",
+        max_steps: int = 1000,
+        include_velocity: bool = True,
+        state_components: str = "joints",
+    ):
         """
-        Transition Probability Matrix (TPM) for the environment.
-        the TPM is a 3D tensor of size [|actions|, |states|, |states|]
+        Parameters
+        ----------
+        task : str
+            'easy' (large target) or 'hard' (small target).
+        max_steps : int
+            Maximum number of environment steps per episode.  dm_control's
+            default time_limit for reacher is 1000 steps (1 s at 0.02 dt
+            × 1000 = 20 s with action_repeat=1, but the suite default is
+            time_limit=1 s with 0.02 control_timestep → 50 steps).  Set
+            this to override or cap episode length.
+        include_velocity : bool
+            If True the observation vector includes joint velocities
+            (obs_dim = 8).  If False, only position + to_target are used
+            (obs_dim = 6), making the task partially observable.
+        state_components : str
+            Which physics quantities form the "true state" used as the
+            decoding target.
+              'joints'      → qpos[:2] (joint angles) + qvel[:2]  → dim 4
+              'joints+target' → above + target (x,y)               → dim 6
         """
-        tpm = np.zeros((len(self.action_space), self.state_dim, self.state_dim))
-        for x in range(self.m):
-            for y in range(self.n):
-                current_state_index = x + y * self.m
-                
-                for action in self.action_space:
+        # ---- Build dm_control environment ----
+        self._env = suite.load(
+            domain_name="reacher",
+            task_name=task,
+        )
 
-                    if action == 2: # right
-                        x_new = (x+1) % 4
-                        y_new = y
-                    elif action == 1: # up
-                        y_new = (y+1) % 4
-                        x_new = x
-                    elif action == 3: # down
-                        y_new = (y-1) % 4
-                        x_new = x
-                    elif action == 0: # left
-                        x_new = (x-1) % 4
-                        y_new = y
+        self.task = task
+        self.max_steps = max_steps
+        self.include_velocity = include_velocity
+        self.state_components = state_components
 
-                    target_state_index = x_new + y_new * self.m
-        
-                    # add probability of moving to the target state
-                    tpm[action, current_state_index, target_state_index]    += (1 - self.self_transition_prob)
-                    # add probability of staying in the same state
-                    tpm[action, current_state_index, current_state_index]   += self.self_transition_prob
+        # ---- Inspect specs once ----
+        obs_spec = self._env.observation_spec()
+        act_spec = self._env.action_spec()
 
-        return tpm
+        # Observation dimension
+        # Keys returned by reacher: 'position' (4), 'to_target' (2), 'velocity' (2)
+        self._obs_keys = ["position", "to_target"]
+        if self.include_velocity:
+            self._obs_keys.append("velocity")
 
-    def init_reward_vec(self) -> np.ndarray:
+        self.obs_dim = sum(obs_spec[k].shape[0] for k in self._obs_keys)
+
+        # Action dimension and bounds
+        self.action_dim = act_spec.shape[0]          # 2
+        self.action_low = act_spec.minimum.copy()     # [-1, -1]
+        self.action_high = act_spec.maximum.copy()    # [ 1,  1]
+
+        # True-state dimension (used as decoding target)
+        if self.state_components == "joints":
+            # joint angles (2) + joint velocities (2)
+            self.state_dim = 4
+        elif self.state_components == "joints+target":
+            # joint angles (2) + joint velocities (2) + target xy (2)
+            self.state_dim = 6
+        else:
+            raise ValueError(
+                f"Unknown state_components='{state_components}'. "
+                "Use 'joints' or 'joints+target'."
+            )
+
+        # ---- Runtime bookkeeping ----
+        self._step_count = 0
+        self._time_step = None
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _flatten_obs(self, time_step) -> np.ndarray:
         """
-        Reward vector for the environment. size is [|states|].
+        Extract and concatenate the chosen observation keys into a single
+        flat float32 vector.
         """
-        reward_vec = np.full((self.state_dim), 0) # Default reward is generic reward
-        
-        return reward_vec
+        parts = [time_step.observation[k] for k in self._obs_keys]
+        return np.concatenate(parts).astype(np.float32)
 
-    def init_observation_matrix(self) -> np.ndarray:
+    def _extract_state(self) -> np.ndarray:
         """
-        Observation matrix for the environment. size is [|states|, |observations|].
-        Start and end states are revealed as seperate observations [0, 1], otherwise only vertical position is revealed.
-        """
-        obs_matrix = np.zeros((self.state_dim, 4))
-        for x in range(self.m):
-            for y in range(self.n):
-                current_state_index = x + y * self.m
-                if x <= 1 and y <= 1:
-                    obs_matrix[current_state_index, 0] = 1.0
-                elif x <= 1 and y > 1:
-                    obs_matrix[current_state_index, 1] = 1.0
-                elif x > 1 and y <= 1:
-                    obs_matrix[current_state_index, 2] = 1.0
-                elif x > 1 and y > 1:
-                    obs_matrix[current_state_index, 3] = 1.0
-                    
+        Extract the true physics state used as the decoding target.
 
-        return obs_matrix
+        For 'joints':
+            [shoulder_angle, elbow_angle, shoulder_vel, elbow_vel]
 
-    def check_done(self):
+        For 'joints+target':
+            above + [target_x, target_y]
         """
-        Check if the current state is a terminal state.
+        physics = self._env.physics
+
+        # Joint angles and velocities (first 2 entries of qpos/qvel;
+        # the remaining qpos entries are the target body position).
+        qpos_joints = physics.data.qpos[:2].copy()
+        qvel_joints = physics.data.qvel[:2].copy()
+
+        parts = [qpos_joints, qvel_joints]
+
+        if self.state_components == "joints+target":
+            # Target body position is stored in the remaining qpos entries
+            # (indices 2 and 3 in the default reacher model).
+            target_xy = physics.data.qpos[2:4].copy()
+            parts.append(target_xy)
+
+        return np.concatenate(parts).astype(np.float32)
+
+    def _get_reward(self, time_step) -> float:
+        """Extract scalar reward from a dm_control TimeStep."""
+        reward = time_step.reward
+        if reward is None:
+            return 0.0
+        return float(reward)
+
+    def _is_done(self, time_step) -> bool:
         """
-        # In this environment, there are no terminal states
-        self.done = False    
+        Episode ends when dm_control says it's the last step OR
+        we have exceeded max_steps.
+        """
+        return time_step.last() or self._step_count >= self.max_steps
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
 
     def reset(self):
         """
-        Reset the environment to the initial state.
+        Reset the environment.
+
+        Returns
+        -------
+        state : np.ndarray, shape (state_dim,)
+            True physics state.
+        observation : np.ndarray, shape (obs_dim,)
+            Agent-visible observation vector.
+        reward : float
+            Initial reward (0.0 at reset).
+        state : np.ndarray, shape (state_dim,)
+            True physics state (occupies the belief_state slot).
+        done : bool
+            Always False after reset.
         """
-        self.done = False
+        self._time_step = self._env.reset()
+        self._step_count = 0
 
-        # Reset state to the start position in a random place
-        quadrant = np.random.randint(0, 4)
-        sub_quadrant = np.random.randint(0, 4)
-        # Map quadrant to top-left corner of the 2x2 block
-        quad_row = (quadrant // 2) * 2
-        quad_col = (quadrant % 2) * 2
+        state = self._extract_state()
+        observation = self._flatten_obs(self._time_step)
+        reward = 0.0
+        done = False
 
-        # Map sub_quadrant to 2x2 position
-        sub_row = sub_quadrant // 2
-        sub_col = sub_quadrant % 2
+        return state, observation, reward, state, done
 
-        # Combine to get full grid coordinates
-        row = quad_row + sub_row
-        col = quad_col + sub_col
-
-        # Compute flat index
-        start_state_i = row * 4 + col
-        
-        self.state = onehot(self.state_dim, start_state_i)
-        
-        # Observation is the unique start position
-        obs_i = np.random.choice(self.obs_dim, p=self.obs_matrix[start_state_i])
-        observation = onehot(self.obs_dim, obs_i)
-
-        # Reward generic at the start position
-        reward = 0
-
-        # Initialize the belief state in the quadrant of the start state
-        self.belief_state = np.zeros((4, 4))
-        # quadrant should have distributed belief
-        if quadrant == 0:
-            self.belief_state[0:2, 0:2] = 1.0 / 4
-        elif quadrant == 1:
-            self.belief_state[0:2, 2:4] = 1.0 / 4
-        elif quadrant == 2:
-            self.belief_state[2:4, 0:2] = 1.0 / 4
-        elif quadrant == 3:
-            self.belief_state[2:4, 2:4] = 1.0 / 4
-        self.belief_state = self.belief_state.flatten()
-        
-        return self.state, observation, reward, self.belief_state, self.done
-
-    def step(self, action_i:int) -> tuple[np.ndarray, float, np.ndarray, np.ndarray, bool]:
+    def step(self, action: np.ndarray):
         """
-        Take a step in the environment with the given action.
-        """
-        if self.done:
-            raise RuntimeError("Episode has reached termination state. Please reset env before taking a step.")
-        
-        # Update state, reward, observation, and belief state
-        new_state_i, obs_i, reward, new_belief = self.interact(self.state, self.belief_state, action_i)
-        
-        self.state  = onehot(self.state_dim, new_state_i)
-        self.belief_state = new_belief
-        observation = onehot(self.obs_dim, obs_i)
+        Take one environment step.
 
-        # Check if the episode is done
-        self.check_done()
+        Parameters
+        ----------
+        action : np.ndarray, shape (action_dim,)
+            Continuous action vector.  Will be clipped to [action_low,
+            action_high].
 
-        return self.state, observation, reward, self.belief_state, self.done
-    
-    def render(self):
+        Returns
+        -------
+        state : np.ndarray, shape (state_dim,)
+            True physics state.
+        observation : np.ndarray, shape (obs_dim,)
+            Agent-visible observation vector.
+        reward : float
+            Scalar reward for this step.
+        state : np.ndarray, shape (state_dim,)
+            True physics state (occupies the belief_state slot).
+        done : bool
+            Whether the episode has ended.
         """
-        Render the environement"
-        """
-        fig, axs = plt.subplots(1, 2, figsize=(10, 5))
-        # render the position of the agent
-        axs[0].imshow(self.state.reshape((self.n, self.m)), cmap='gray', vmin=0, vmax=1)
-        axs[0].set_title("Agent Position")
-        axs[0].set_xticks([])
-        axs[0].set_yticks([])
-        axs[0].invert_yaxis()
-        # render the belief state
-        axs[1].imshow(self.belief_state.reshape((self.n, self.m)), cmap='gray', vmin=0, vmax=1)
-        axs[1].set_title("Belief State")
-        axs[1].set_xticks([])
-        axs[1].set_yticks([])
-        axs[1].invert_yaxis()
-        plt.show()
+        # Clip to valid range (actor may overshoot due to numerical issues
+        # even after tanh).
+        action = np.clip(action, self.action_low, self.action_high)
+
+        self._time_step = self._env.step(action)
+        self._step_count += 1
+
+        state = self._extract_state()
+        observation = self._flatten_obs(self._time_step)
+        reward = self._get_reward(self._time_step)
+        done = self._is_done(self._time_step)
+
+        return state, observation, reward, state, done
+
+    # ------------------------------------------------------------------
+    # Convenience / introspection
+    # ------------------------------------------------------------------
+
+    def sample_random_action(self) -> np.ndarray:
+        """Return a uniformly random action within the valid bounds."""
+        return np.random.uniform(
+            self.action_low, self.action_high
+        ).astype(np.float32)
+
+    @property
+    def physics(self):
+        """Direct access to the underlying MuJoCo physics, for debugging."""
+        return self._env.physics
+
+    def __repr__(self):
+        return (
+            f"ReacherEnv(task={self.task!r}, max_steps={self.max_steps}, "
+            f"obs_dim={self.obs_dim}, action_dim={self.action_dim}, "
+            f"state_dim={self.state_dim}, "
+            f"include_velocity={self.include_velocity})"
+        )

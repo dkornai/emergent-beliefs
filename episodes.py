@@ -55,48 +55,6 @@ class Episode():
            
             self.attached = True
 
-    def render(self):
-        """
-        Render the episode data
-        """
-        self.attach()
-        
-        fig, axs = plt.subplots(5, 1, figsize=(8, 10))
-        
-        # Render the states
-        axs[0].imshow(self.states.T, aspect='auto', cmap='gray')
-        axs[0].set_title("States")
-        axs[0].set_xlabel("Time Step")
-        axs[0].set_ylabel("State Index")
-
-        # Render the observations
-        axs[1].imshow(self.observations.T, aspect='auto', cmap='gray')
-        axs[1].set_title("Observations")
-        axs[1].set_xlabel("Time Step")
-        axs[1].set_ylabel("Observation Index")
-
-        # Render the actions
-        axs[2].imshow(self.actions.T, aspect='auto', cmap='gray')
-        axs[2].set_title("Actions")
-        axs[2].set_xlabel("Time Step")
-        axs[2].set_ylabel("Action Index")
-
-        # Render the rewards
-        axs[3].plot(self.rewards, marker='o', linestyle='-', color='b')
-        axs[3].set_title("Rewards")
-        axs[3].set_xlabel("Time Step")
-
-        # Render the belief states
-        axs[4].imshow(self.belief_states.T, aspect='auto', cmap='gray')
-        axs[4].set_title("Belief States")
-        axs[4].set_xlabel("Time Step")
-        axs[4].set_ylabel("State Index")
-        
-        plt.tight_layout()
-        plt.show()
-
-
-
 
 class EpisodeCollection():
     """
@@ -111,52 +69,18 @@ class EpisodeCollection():
         assert all(ep.attached for ep in episodes), "All episodes must be attached (data converted to numpy arrays)."
         self.episodes = episodes
 
+        self.O = self.episodes[0].observations.shape[1]     # Observation dimension
+        self.A = self.episodes[0].actions.shape[1]          # Number of distinct actions
+        self.H = self.O + self.A                            # History dimension (O + A)
+        self.S = self.episodes[0].belief_states.shape[1]    # Number of states in the belief state (and the environment)
+
         # Pre-convert episodes to padded tensors for training
         self.episodes_to_batch()
         
         self.B = len(self.episodes)                         # Number of episodes
         self.T = self.batch_histories.shape[1]              # Length of the longest episode in the batch
-        self.O = self.episodes[0].observations.shape[1]     # Observation dimension
-        self.A = self.episodes[0].actions.shape[1]          # Number of distinct actions
-        self.H = self.batch_histories.shape[2]              # History dimension (O + A)
-        self.S = self.batch_beliefs.shape[2]                # Number of states in the belief state (and the environment)
-
         
 
-    def get_monte_carlo_state_values(self, gamma=None):
-        """
-        Monte Carlo estimation of V(s) from the list of episodes
-        """
-        assert gamma is not None, "Gamma (discount factor) must be provided."
-        assert gamma >= 0 and gamma <= 1, "Gamma must be in the range [0, 1]."
-        assert len(self.episodes) > 100, "Not enough episodes provided for Monte Carlo estimation."
-        
-        num_states = self.episodes[0].states.shape[1]
-        state_returns = np.zeros(num_states)
-        state_counts = np.zeros(num_states)
-
-        for ep in self.episodes:
-            rewards = ep.rewards
-            states = ep.states
-
-            G = 0.0
-            returns = [0.0] * len(rewards)
-            for t in reversed(range(len(rewards))):
-                G = rewards[t] + gamma * G
-                returns[t] = G
-
-            for t, state in enumerate(states):
-                state_idx = np.argmax(state).item()  # Get index from one-hot
-                state_returns[state_idx] += returns[t]
-                state_counts[state_idx] += 1
-
-        # Avoid divide-by-zero
-        nonzero_mask = state_counts > 0
-        state_values = np.zeros(num_states)
-        state_values[nonzero_mask] = state_returns[nonzero_mask] / state_counts[nonzero_mask]
-
-        self.mc_values = np.round(state_values, 2)
-        return self.mc_values
     
     def get_monte_carlo_returns(self, gamma=None):
         """
@@ -176,73 +100,6 @@ class EpisodeCollection():
         self.mc_returns = returns
         return self.mc_returns
 
-    def get_history_values(self, gamma=None):
-        """
-        Compute Monte Carlo value estimates for all unique histories.
-        
-        Returns a table (list of dicts) with:
-            - 'history': the history vector
-            - 'count': number of occurrences
-            - 'mean_return': mean Monte Carlo return following that history
-            - 'var_return': variance of returns
-        """
-        assert gamma is not None, "Gamma must be provided."
-        assert 0 <= gamma <= 1, "Gamma must be in [0,1]."
-
-        # Ensure MC returns already computed
-        if not hasattr(self, "mc_returns"):
-            self.get_monte_carlo_returns(gamma)
-
-        batch_histories_np = self.batch_histories.cpu().numpy()
-
-        history_dict = {}  # key = tuple(history_vector), value = list of returns
-
-        for b in range(self.B):
-            length = self.ep_lengths[b]
-
-            # Extract full unpadded history for episode b
-            full_hist = batch_histories_np[b, :length]   # [T, H]
-
-            # Build cumulative histories:
-            # concat full_hist[0:t+1] for each t
-            for t in range(length):
-                # Extract prefix history matrix [t+1, H]
-                prefix = full_hist[:t+1]
-
-                # Flatten to a 1D vector
-                prefix_vec = prefix.flatten()
-
-                # Hashable key (use bytes for speed)
-                key = prefix_vec.tobytes()
-
-                # MC return from timestep t
-                G = float(self.mc_returns[b, t].item())
-
-                if key not in history_dict:
-                    history_dict[key] = {
-                        "vec": prefix_vec.copy(),   # store for later reconstruction
-                        "returns": []
-                    }
-                history_dict[key]["returns"].append(G)
-
-        # Build output table
-        table = []
-        for entry in history_dict.values():
-            arr = np.array(entry["returns"])
-            table.append({
-                "history": entry["vec"],
-                "count": len(arr),
-                "mean_return": float(np.round(arr.mean(),2)),
-                "var_return": float(np.round(arr.var(ddof=1),2)) if len(arr) > 1 else 0.0
-            })
-        
-        # Print feedback
-        print("History value estimation complete.")
-        print(f"{len(table)} unique histories found in dataset.")
-
-        hvt = HistoryValueTable(table)
-        self.history_value_table = hvt
-        return hvt
 
 
     def episodes_to_batch(self):
@@ -261,7 +118,7 @@ class EpisodeCollection():
         padded_observations = pad_sequence(observations,batch_first=True) # [B, T, O]
         padded_rewards      = pad_sequence(rewards,     batch_first=True) # [B, T]
         padded_beliefs      = pad_sequence(beliefs,     batch_first=True) # [B, T, S]
-        padded_actions      = padded_histories[:, :, -4:]                 # [B, T, A]
+        padded_actions      = padded_histories[:, :, -self.A:]            # [B, T, A]
 
         # Mask for valid time steps within each episode [size (B, T)]
         mask_traj   = torch.zeros_like(padded_rewards, dtype=torch.float32)
@@ -323,7 +180,7 @@ def collect_episodes(env:PomdpEnv, policy:np.array, num_episodes:int) -> list[Ep
             prev_action[action] = 1
             
             # Step the environment with the chosen action
-            state, observation, reward, belief, done = env.step(action)
+            state, observation, reward, belief, done = env.step(prev_action)
 
         # update the episode with the final states, finish, and append it to the list
         episode.add_step(state, observation, reward, prev_action, belief)
@@ -332,76 +189,6 @@ def collect_episodes(env:PomdpEnv, policy:np.array, num_episodes:int) -> list[Ep
     
     return episodes  
         
-
-
-
-class HistoryValueTable:
-    """
-    Stores return statistics (mean, variance) for each unique partial history.
-    """
-
-    def __init__(self, entries):
-        """
-        entries: list of dicts with fields:
-            - "history" : numpy array (flattened history)
-            - "mean_return"
-            - "var_return"
-            - "count"
-        """
-
-        self.table = entries
-
-        # Fast lookup: bytes → stats dict
-        self.lookup = {
-            entry["history"].tobytes(): {
-                "mean": entry["mean_return"],
-                "var": entry["var_return"],
-                "count": entry["count"],
-                "history": entry["history"]
-            }
-            for entry in entries
-        }
-
-    def _prepare_key(self, history):
-        """
-        Convert history (1D or 2D numpy array) to a canonical bytes key.
-        """
-        h = np.asarray(history, dtype=np.float32)
-
-        if h.ndim == 2:
-            h = h.reshape(-1)
-        elif h.ndim != 1:
-            raise ValueError("History must be a 1D or 2D array")
-
-        return h.tobytes()
-
-    def query(self, history):
-        """
-        Return the mean value for a given history, or np.nan if not present.
-        """
-        key = self._prepare_key(history)
-        stats = self.lookup.get(key, None)
-        return stats["mean"] if stats is not None else np.nan
-
-    def get_stats(self, history):
-        """
-        Return full statistics: {mean, var, count, history} or None.
-        """
-        key = self._prepare_key(history)
-        return self.lookup.get(key, None)
-
-    def exists(self, history):
-        """
-        Check if the history exists in the table.
-        """
-        key = self._prepare_key(history)
-        return key in self.lookup
-
-    def __len__(self):
-        return len(self.lookup)
-
-    def __repr__(self):
-        return f"HistoryValueTable(num_histories={len(self)})"
     
 def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
     """
