@@ -390,7 +390,7 @@ class ReacherEnv:
     def __init__(
         self,
         task: str = "easy",
-        max_steps: int = 1000,
+        max_steps: int = 50,
         include_velocity: bool = True,
         state_components: str = "joints",
     ):
@@ -420,6 +420,11 @@ class ReacherEnv:
             domain_name="reacher",
             task_name=task,
         )
+
+        self.actions_discrete = False
+        self.obs_discrete = False
+        self.action_space = [0, 1] # dummy action space (not used since actions are continuous, but need to get action_dim from it)
+        self.action_dim = 2
 
         self.task = task
         self.max_steps = max_steps
@@ -576,7 +581,7 @@ class ReacherEnv:
 
         state = self._extract_state()
         observation = self._flatten_obs(self._time_step)
-        reward = self._get_reward(self._time_step)
+        reward = self._get_reward(self._time_step) * 10  # Scale reward to [0, 10] for better learning dynamics (tune as needed)
         done = self._is_done(self._time_step)
 
         return state, observation, reward, state, done

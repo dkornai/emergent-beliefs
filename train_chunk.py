@@ -1,11 +1,11 @@
 
 import torch
-from episodes import EpisodeCollection, compute_success_and_cliff_rates
+from episodes import EpisodeCollection, compute_cw_success, compute_reach_success
 from losses import compute_model_loss, compute_actor_loss
 from actor import collect_episodes_actor, ActorPolicyWrapper
 import torch.nn.utils as nn_utils
 from train_perf_logger import TrainLogger
-from environment import PomdpEnv
+from environment import PomdpEnv, CliffWalk, ReacherEnv
 from nn_models import ModelCollection, save_checkpoint
 
 
@@ -136,18 +136,30 @@ def chunk_metrics(
     # Mean length    
         mean_length = EC.batch_mask_traj.sum().item() / EC.B
 
-    # Success rate
-    success_rate = compute_success_and_cliff_rates(EC=EC, env=env)
-
     metrics = {}
     metrics['return_mean']  = float(mean_return)
     metrics['return_std']   = float(std_return)
     metrics['traj_len_mean']= float(mean_length)
-    metrics['success_rate'] = float(success_rate)
 
-    # Print
-    print(f"success_rate={metrics['success_rate']:.2f}, traj_len_mean={metrics['traj_len_mean']:.2f}, "
-          f"return_mean={metrics['return_mean']:.2f}, return_std={metrics['return_std']:.2f}")
+    printstr = f"traj_len_mean={metrics['traj_len_mean']:.2f}, return_mean={metrics['return_mean']:.2f}, return_std={metrics['return_std']:.2f}"
+
+    # Calculate environment-specific success metrics
+    if type(env) == CliffWalk:
+        success_rate = compute_cw_success(EC=EC, env=env)
+        metrics['success_rate'] = float(success_rate)
+        printstr += f", success_rate={metrics['success_rate']:.2f}"
+   
+    elif type(env) == ReacherEnv:
+        success_rate, avg_dist = compute_reach_success(EC=EC, threshold=0.02)
+        metrics['success_rate'] = float(success_rate)
+        metrics['avg_dist'] = float(avg_dist)
+        printstr += f", success_rate={metrics['success_rate']:.2f}, avg_dist={metrics['avg_dist']:.2f}"
+
+    
+    
+    
+    
+    print(printstr)    
 
     # Append to logs
     logs_agent_perf.append(metrics)
@@ -250,10 +262,14 @@ def optim_metrics(
     # Print
     printstr = ""
     if metrics['value_loss'] != -1:
-        printstr + f"value_loss={metrics['value_loss']:.2f} "
+        printstr += f"value_loss={metrics['value_loss']:.2f} "
+        printstr += f"q_loss={world_logs['q_loss']:.2f} "
+        printstr += f"v_loss={world_logs['v_loss']:.2f} "
         
     if metrics['pred_loss'] != -1: 
-        printstr + f"pred_loss={metrics['pred_loss']:.2f} "
+        printstr += f"pred_loss={metrics['pred_loss']:.2f} "
+        printstr += f"r_loss={world_logs['r_loss']:.2f} "
+        printstr += f"o_loss={world_logs['o_loss']:.2f} "
     
     printstr += f"actor_loss={metrics['actor_loss']:.2f}"
 

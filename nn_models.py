@@ -220,7 +220,12 @@ class ActorReadout(nn.Module):
             # For continuous actions, output is interpreted as mean and std for a Gaussian distribution
             half = param.shape[-1] // 2
             mean = param[..., :half]
-            std = F.softplus(param[..., half:]) + 1e-6  # Ensure std is positive
+            mean = torch.tanh(mean)  # Optional: constrain mean to a certain range (e.g., [-1, 1]) depending on action space
+            # log_std = param[..., half:] + 1e-6  # Ensure std is positive
+            # std = torch.exp(log_std)
+            # std = torch.clamp(std, min=0.05, max=1.0)  # Optional: clamp std to a reasonable range to prevent numerical issues
+            std = 0.1 * torch.ones_like(mean)  # Fixed std for stability, can be learned or output by the network if desired
+
             cov = torch.diag_embed(std**2)
             dist = MultivariateNormal(mean, cov)
 
@@ -328,7 +333,10 @@ class ModelCollection(nn.Module):
 
     def init_optimizers(self):
         # Actor optimizer
-        optimizer_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-4)
+        if self.actions_discrete:
+            optimizer_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-4)
+        else:
+            optimizer_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-4)  # higher LR for continuous actions
 
         # World model optimizer
         core_params   = list(self.belief_model.parameters()) + list(self.pred_model.parameters())

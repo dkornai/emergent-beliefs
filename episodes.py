@@ -190,7 +190,7 @@ def collect_episodes(env:PomdpEnv, policy:np.array, num_episodes:int) -> list[Ep
     return episodes  
         
     
-def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
+def compute_cw_success(EC: EpisodeCollection, env):
     """
     For Cliffwalk style tasks, computes the fraction of episodes that:
         - reach the goal
@@ -215,3 +215,29 @@ def compute_success_and_cliff_rates(EC: EpisodeCollection, env):
     success_rate = successes / EC.B
     
     return success_rate
+
+def compute_reach_success(EC: EpisodeCollection, threshold=0.05):
+    """
+    Fraction of episodes where the finger was within `threshold`
+    of the target at the final timestep.
+    
+    Uses the to_target observation (indices 4:6 in the default
+    obs layout: [position(4), to_target(2), velocity(2)]).
+    """
+    avg_dist = 0.0
+
+    successes = 0
+    for ep in EC.episodes:
+        # to_target is the finger-to-target vector in the observation
+        final_obs = ep.observations[-1]
+        to_target = final_obs[4:6]  # adjust indices if include_velocity=False
+        dist = np.linalg.norm(to_target)
+        avg_dist += dist
+        if dist < threshold:
+            successes += 1
+
+    success_rate = successes / EC.B
+
+    avg_dist /= EC.B
+
+    return success_rate, avg_dist

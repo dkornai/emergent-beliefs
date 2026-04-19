@@ -82,5 +82,6 @@ def collect_episodes_actor(env, actor_policy: ActorPolicyWrapper, num_episodes: 
         ep.finish_episode()
 
         episodes.append(ep)
+        print(f"Collected episode {_} of {num_episodes}           ", end="\r")
 
     return episodes

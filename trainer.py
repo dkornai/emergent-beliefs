@@ -3,7 +3,7 @@ import os
 import torch
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-from environment import CliffWalk, cw_default_params_dict
+from environment import CliffWalk, cw_default_params_dict, ReacherEnv, PointMassEnv
 from nn_models import ModelCollection
 from train_chunk import train_with_chunks
 from train_belief import belief_test
@@ -23,6 +23,10 @@ def experiment(rep):
     # 1) Initialise the POMDP environment
     if config.ENV_TYPE == 'cliffwalk':
         env = CliffWalk(**cw_default_params_dict)
+    elif config.ENV_TYPE == 'reacher':
+        env = ReacherEnv()
+    else:
+        raise ValueError(f"Unknown ENV_TYPE: {config.ENV_TYPE}")
     
 
     # 2) Initialise the model and optimizers

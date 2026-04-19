@@ -10,11 +10,12 @@ def gaussian_NLL(pred_mean, pred_std, target):
     pred_mean: [B, T, D]
     pred_std:  [B, T, D]
     target:    [B, T, D]
-    Returns:   scalar tensor of average NLL over all valid entries (masking should be applied outside this function)
+    Returns:   [B, T] NLL for each time step (sum over D)
     """
     var = pred_std ** 2 + 1e-8
     nll = 0.5 * torch.log(2 * torch.pi * var) + 0.5 * ((target - pred_mean) ** 2 / var)
-    return nll.mean()
+    
+    return nll.sum(dim =-1)  # sum over D to get [B, T]
 
 # TD loss function
 def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
@@ -119,6 +120,7 @@ def loss_obs(
         # Compute Gaussian NLL loss
         pred_mean = est_o_params[:, :, :est_o_params.shape[-1]//2]
         pred_std  = est_o_params[:, :, est_o_params.shape[-1]//2:]
+        pred_std = F.softplus(pred_std) + 1e-6  # Ensure std is positive
         aux_loss = gaussian_NLL(pred_mean, pred_std, pred_obs_target)  # [B, T - pred_steps]
 
     aux_loss = aux_loss * aux_mask  # Apply mask
@@ -216,17 +218,23 @@ def compute_model_loss(
             # Total 
             pred_loss += (L_r0 + L_r1 + L_o1 + L_r2 + L_o2)
 
-            #print(f"Chunk {i}: L_r0={L_r0.item():.4f}, L_r1={L_r1.item():.4f}, L_r2={L_r2.item():.4f}, L_o1={L_o1.item():.4f}, L_o2={L_o2.item():.4f}")
+            
                
     # Total loss is from both critic loss and world loss
     critic_loss = (lambda_value * critic_loss) / n_chunks
     pred_loss   = (lambda_world * pred_loss ) / n_chunks
     total_loss = critic_loss + pred_loss
 
-    return total_loss, {
+    logs = {
         "value": critic_loss.item(),
         "world": pred_loss.item(),
+        "v_loss": V_loss.item() if lambda_value > 0.0 else -1,
+        "q_loss": Q_loss.item() if lambda_value > 0.0 else -1,
+        "r_loss": L_r0.item() + L_r1.item() + L_r2.item() if lambda_world > 0.0 else -1,
+        "o_loss": L_o1.item() + L_o2.item() if lambda_world > 0.0 else -1
     }
+
+    return total_loss, logs
 
 
 
@@ -277,7 +285,10 @@ def compute_actor_loss(
 
     policy_term    = (advantage * log_probs * mask_actor).sum() / mask_actor.sum()
     entropy_term   = (entropy * mask_actor).sum() / mask_actor.sum()
-    entropy_coeff  = 0.1  # tune this
+    if models.actions_discrete:
+        entropy_coeff  = 0.1  # tune this
+    else:
+        entropy_coeff  = 0.0 # smaller for continuous actions
 
     actor_loss     = -lambda_actor * policy_term - entropy_coeff * entropy_term
 
@@ -316,6 +327,6 @@ def compute_advantage(
     # Normalise over valid entries (mean-center)
     mask_actor = valid_mask[:, 1:]
     valid_adv  = advantage[mask_actor == 1.0]
-    advantage  = (advantage - valid_adv.mean()) 
+    advantage  = (advantage - valid_adv.mean())
 
     return advantage
