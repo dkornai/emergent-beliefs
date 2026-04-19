@@ -43,8 +43,8 @@ def belief_test(config):
     indices = []
     indices.append("1step")
 
-    for type in ['lin', 'nonlin']:
-        if type == 'lin':
+    for dectype in ['lin', 'nonlin']:
+        if dectype == 'lin':
             print("Linear Decoder")
             belief_decoder = LinBeliefDecoder(input_dim=episodes.H, belief_dim=episodes.S)
         else:
@@ -55,7 +55,7 @@ def belief_test(config):
             episodes, belief_decoder, [0, None], 
             value_RNN=None, num_epochs=NUM_EPOCHS, lr=1e-3)
         
-        if type == 'lin':
+        if dectype == 'lin':
             CEb_true_lin = ce_loss
             TVb_true_lin = tv_loss
         else:
@@ -90,8 +90,8 @@ def belief_test(config):
             print(f"\nUsing Belief RNN from chunk {chunk}")
             
             # Iterate over linear and non-linear decoders
-            for type in ['lin', 'nonlin']:
-                if type == 'lin':
+            for dectype in ['lin', 'nonlin']:
+                if dectype == 'lin':
                     print("Linear Decoder")
                     belief_decoder = LinBeliefDecoder(input_dim=belief_model.latent_dim, belief_dim=episodes.S)
                 else:
@@ -102,7 +102,7 @@ def belief_test(config):
                     episodes, belief_decoder, [0, None], 
                     value_RNN=belief_model, num_epochs=NUM_EPOCHS, lr=1e-3)
                 
-                if type == 'lin':
+                if dectype == 'lin':
                     CEs_true_lin.append(ce_loss)
                     TVs_true_lin.append(tv_loss)
                 else:

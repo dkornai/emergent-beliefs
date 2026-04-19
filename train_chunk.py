@@ -40,7 +40,7 @@ def train_with_chunks(
     memory = []
 
     # Iterate through new chunks
-    for chunk_idx in range(1, num_new_chunks+2):
+    for chunk_idx in range(1, num_new_chunks+1):
         print(f"[ Chunk {chunk_idx}]")
 
         # Generate new chunk and append it to memories

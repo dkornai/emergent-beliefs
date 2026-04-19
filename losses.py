@@ -52,10 +52,10 @@ def loss_q_td(
     #
     # SARSA-style: target_k = r_{k+1} + γ Q(z_{k+1}, a_{k+1})
 
-    q_t    = q_values[:, :-1]       # [B, T-2]  Q(z_k, a_k)      k=0..T-3
-    q_tp1  = q_values[:, 1:]        # [B, T-2]  Q(z_{k+1}, a_{k+1})
-    r_tp1  = rewards[:, 1:-1]       # [B, T-2]  r_{k+1}          k=0..T-3
-    mask   = mask_traj[:, 1:-1]     # [B, T-2]
+    q_t    = q_values[:, :-1]         # [B, T-2]  Q(z_k, a_k)      k=0..T-3
+    q_tp1  = q_values[:, 1:].detach() # [B, T-2]  Q(z_{k+1}, a_{k+1})
+    r_tp1  = rewards[:, 1:-1]         # [B, T-2]  r_{k+1}          k=0..T-3
+    mask   = mask_traj[:, 1:-1]       # [B, T-2]
 
 
     # Zero bootstrap at terminal transitions
@@ -66,7 +66,7 @@ def loss_q_td(
             idx = min(L - 2, q_tp1.shape[1] - 1)
             q_tp1[b, idx] = 0.0
 
-    td_target = r_tp1 + gamma * q_tp1.detach()
+    td_target = r_tp1 + gamma * q_tp1
     td_error  = (q_t - td_target) ** 2
     td_error  = td_error * mask
 

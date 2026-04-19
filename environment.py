@@ -361,8 +361,6 @@ dm_control reacher specs (easy / hard):
     - Continuous scalar in [0, 1] based on distance to target.
 """
 
-import numpy as np
-
 try:
     from dm_control import suite
 except ImportError:
