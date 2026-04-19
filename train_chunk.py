@@ -183,25 +183,29 @@ def optimisation_step(
     # ============================================================
     # PHASE 1: update world model + critic *first*
     # ============================================================
-    for _ in range(world_steps):
-        world_loss, world_logs = compute_model_loss(
-            all_chunks=memory,
-            models=models,
-            gamma=gamma,
-            lambda_value=lambda_value,
-            lambda_world=lambda_world,
-            n_chunks_past=n_chunks_past,
-            device=device
-        )
+    if lambda_world > 0 or lambda_value > 0:
+        for _ in range(world_steps):
+            world_loss, world_logs = compute_model_loss(
+                all_chunks=memory,
+                models=models,
+                gamma=gamma,
+                lambda_value=lambda_value,
+                lambda_world=lambda_world,
+                n_chunks_past=n_chunks_past,
+                device=device
+            )
 
-        optimizer_model.zero_grad()
-        world_loss.backward()
-        # ---- gradient clipping for model + critics ----
-        nn_utils.clip_grad_norm_(
-            [p for group in optimizer_model.param_groups for p in group['params']],
-            max_norm=MAX_GRAD_NORM_MODEL
-        )
-        optimizer_model.step()
+            optimizer_model.zero_grad()
+            world_loss.backward()
+            # ---- gradient clipping for model + critics ----
+            nn_utils.clip_grad_norm_(
+                [p for group in optimizer_model.param_groups for p in group['params']],
+                max_norm=MAX_GRAD_NORM_MODEL
+            )
+            optimizer_model.step()
+    
+    else:
+        world_loss, world_logs = None, None
 
     # ============================================================
     # PHASE 2: update actor using *updated* latents & critic
@@ -210,7 +214,9 @@ def optimisation_step(
         actor_loss, actor_logs = compute_actor_loss(
             newest_chunk=memory[-1],
             models=models,
+            gamma=gamma,
             lambda_actor=lambda_actor,
+            lambda_value=lambda_value,
             device=device
         )
         
@@ -228,17 +234,32 @@ def optimisation_step(
 
 
 def optim_metrics(
-        world_logs      : dict, 
+        world_logs      : dict | None, 
         actor_logs      : dict, 
         logs_train_loss : TrainLogger
         ):
     metrics = {}
-    metrics['value_loss']   = world_logs['value']
-    metrics['pred_loss']    = world_logs['world']
+    if world_logs != None:
+        metrics['value_loss']   = world_logs['value']
+        metrics['pred_loss']    = world_logs['world']
+    else:
+        metrics['value_loss']   = -1
+        metrics['pred_loss']    = -1
+
     metrics['actor_loss']   = actor_logs['actor']
 
     # Print
-    print(f"value_loss={metrics['value_loss']:.2f}, pred_loss={metrics['pred_loss']:.2f},  actor_loss={metrics['actor_loss']:.2f}")
+    printstr = ""
+    if metrics['value_loss'] != -1:
+        printstr + f"value_loss={metrics['value_loss']:.2f} "
+        
+    if metrics['pred_loss'] != -1: 
+        printstr + f"pred_loss={metrics['pred_loss']:.2f} "
+    
+    printstr += f"actor_loss={metrics['actor_loss']:.2f}"
+
+    print(printstr)
+
 
     # Append to logs
     logs_train_loss.append(metrics)

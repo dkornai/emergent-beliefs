@@ -231,7 +231,7 @@ def compute_model_loss(
 
             # Total 
             pred_loss += (L_r0 + L_r1 + L_o1 + L_r2 + L_o2)
-
+               
     # Total loss is from both critic loss and world loss
     critic_loss = (lambda_value * critic_loss) / n_chunks
     pred_loss = (lambda_world * pred_loss ) / n_chunks
@@ -247,7 +247,9 @@ def compute_model_loss(
 def compute_actor_loss(
         newest_chunk: EpisodeCollection,
         models:       ModelCollection,
+        gamma,
         lambda_actor=1.0,
+        lambda_value=1.0,
         device="cpu"
     ):
     """
@@ -268,51 +270,68 @@ def compute_actor_loss(
     z_full   = models.belief_model(h_new)           # [B, T, H]
     z_det    = z_full.detach()             # don't let actor update the encoder
 
-    # state-value critic
-    V_full   = models.v_models[0](z_full)                            # [B, T]
 
-    # action-value critic
-    Q_full   = models.q_models[0](z_full)                            # [B, T, A]
 
-    # ---------------------------------------------------
-    # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
-    # ---------------------------------------------------
+    
 
     z_actor        = z_det[:, :-1, :]        # [B, T-1, H], states z_0..z_{T-2}
     actions_actor  = act_new[:, 1:, :]       # [B, T-1, A], actions a_0..a_{T-2}
     mask_actor     = mask_new[:, 1:]         # [B, T-1]
+    valid_mask     = (mask_actor == 1.0)
+
+    # ---------------------------------------------------
+    # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
+    # ---------------------------------------------------
+    if lambda_value > 0:
+        # state-value critic
+        V_full   = models.v_models[0](z_full)                            # [B, T]
+
+        # action-value critic
+        Q_full   = models.q_models[0](z_full)                            # [B, T, A]
+
+        # Q(z_t, A_t) for all actions
+        Q_t_all        = Q_full[:, :-1, :]                                      # [B, T-1, A]
+        Q_t_all        = Q_t_all * mask_actor.unsqueeze(-1)                     # [B, T-1, A]
+        
+        # Q(z_t, a_t) for the specific action
+        Q_sa           = torch.sum(Q_t_all.detach() * actions_actor, dim=-1)    # [B, T-1]
+
+        # V(z_t)
+        V_actor        = V_full[:, :-1].detach()  # [B, T-1]
+        V_actor        = V_actor * mask_actor
+
+        # Advantage
+        A_actor        = Q_sa - V_actor          # [B, T-1]
+        A_actor        = A_actor * mask_actor
+
+        # Normalise advantages over valid entries
+        valid_adv      = A_actor[valid_mask]
+        adv_mean       = valid_adv.mean()
+        #adv_std        = valid_adv.std() + 1e-8
+        baseline       = (A_actor - adv_mean)# / adv_std
+
+    # ---------------------------------------------------
+    # ACTOR LOSS: use REINFORCE baseline
+    # ---------------------------------------------------
+    elif lambda_value == 0:
+        # --- Monte Carlo returns instead of Q − V ---
+        mc_returns = newest_chunk.get_monte_carlo_returns(gamma).to(device)  # [B, T]
+        G_t = mc_returns[:, :-1].detach()      # [B, T-1], align with z_0..z_{T-2}
+
+        # Normalise over valid entries (mean-center, optionally divide by std)
+        valid_G    = G_t[valid_mask]
+        baseline   = (G_t - valid_G.mean())    # no baseline, just center
+
 
     # Policy at those states
     probs_actor    = models.actor_model(z_actor)          # [B, T-1, A]
     log_probs_all  = torch.log(probs_actor + 1e-8)
     log_probs      = torch.sum(actions_actor * log_probs_all, dim=-1)  # [B, T-1]
 
-    # Q(z_t, A_t) for all actions
-    Q_t_all        = Q_full[:, :-1, :]                                      # [B, T-1, A]
-    Q_t_all        = Q_t_all * mask_actor.unsqueeze(-1)                     # [B, T-1, A]
-    
-    # Q(z_t, a_t) for the specific action
-    Q_sa           = torch.sum(Q_t_all.detach() * actions_actor, dim=-1)    # [B, T-1]
-
-    # V(z_t)
-    V_actor        = V_full[:, :-1].detach()  # [B, T-1]
-    V_actor        = V_actor * mask_actor
-
-    # Advantage
-    A_actor        = Q_sa - V_actor          # [B, T-1]
-    A_actor        = A_actor * mask_actor
-
-    # Normalise advantages over valid entries
-    valid_mask     = (mask_actor == 1.0)
-    valid_adv      = A_actor[valid_mask]
-    adv_mean       = valid_adv.mean()
-    #adv_std        = valid_adv.std() + 1e-8
-    A_norm         = (A_actor - adv_mean)# / adv_std
-
-    # entropy bonus
+    # Entropy bonus
     entropy        = -(probs_actor * log_probs_all).sum(dim=-1)  # [B, T-1]
 
-    policy_term    = (A_norm * log_probs * mask_actor).sum() / mask_actor.sum()
+    policy_term    = (baseline * log_probs * mask_actor).sum() / mask_actor.sum()
     entropy_term   = (entropy * mask_actor).sum() / mask_actor.sum()
     entropy_coeff  = 0.1  # tune this
 

@@ -77,6 +77,25 @@ def sequence_cross_entropy(p_target, q_pred, mask=None, eps=1e-8):
     else:
         return cross_entropy.mean()
     
+def sequence_tv_distance(p_target, q_pred, mask=None):
+    """
+    Compute total variation distance between two categorical distributions over time.
+
+    Args:
+        p_target: [B, T, C] true distribution (e.g., one-hot or soft label)
+        q_pred:   [B, T, C] predicted distribution (must be softmaxed already)
+        mask:     [B, T] optional mask for valid time steps (1 = valid, 0 = ignore)
+
+    Returns:
+        Scalar total variation distance
+    """
+    tv_distance = 0.5 * torch.sum(torch.abs(p_target - q_pred), dim=-1)  # [B, T]
+
+    if mask is not None:
+        tv_distance = tv_distance * mask  # mask out invalid steps
+        return tv_distance.sum() / mask.sum()
+    else:
+        return tv_distance.mean()
     
 
 def train_belief_decoder(
@@ -134,18 +153,19 @@ def train_belief_decoder(
         
         # Calculate loss
         loss = sequence_cross_entropy(true_beliefs_batch, pred_beliefs, traj_mask_batch)
-        
+        tv = sequence_tv_distance(true_beliefs_batch, pred_beliefs, traj_mask_batch)
+
         # Backpropagation
         loss.backward()
         optimizer.step()
         scheduler.step()
 
-        print(f"Epoch {epoch+1}, CE Loss: {loss.item():.4f}", end='\r')
+        print(f"Epoch {epoch+1}, CE Loss: {loss.item():.4f}, TV Distance: {tv.item():.4f}", end='\r')
 
     # Move the models back to CPU
     belief_model = belief_model.to('cpu')
 
-    return loss.item()
+    return loss.item(), tv.item()
 
 
 def evaluate_belief(value_model, belief_model, episode):
@@ -252,10 +272,10 @@ def decode_training(episodes, belief_decoder, indices, value_RNN=None, num_epoch
     else:
         input_to_belief_decoder = episodes.batch_histories
     
-    loss = train_belief_decoder(belief_decoder, episodes, input_to_belief_decoder, num_epochs=num_epochs, lr=lr, batch_size=batch_size, belief_index=indices)
-    print("CE Loss:", np.round(loss, 2), "               ")
+    ce_loss, tv_loss = train_belief_decoder(belief_decoder, episodes, input_to_belief_decoder, num_epochs=num_epochs, lr=lr, batch_size=batch_size, belief_index=indices)
+    print("CE Loss:", np.round(ce_loss, 2), "TV Loss:", np.round(tv_loss, 2), "                                 ")
 
-    return belief_decoder, loss
+    return belief_decoder, ce_loss, tv_loss
     
 def decode_visualisation(test_episode, belief_decoder, indices, env_size, value_RNN=None):    
     

@@ -51,14 +51,16 @@ def belief_test(config):
             print("Non-Linear Decoder")
             belief_decoder = NonLinBeliefDecoder(input_dim=episodes.H, hidden_dim=64, belief_dim=episodes.S)
 
-        belief_decoder, loss = decode_training(
+        belief_decoder, ce_loss, tv_loss = decode_training(
             episodes, belief_decoder, [0, None], 
             value_RNN=None, num_epochs=NUM_EPOCHS, lr=1e-3)
         
         if type == 'lin':
-            CEb_true_lin = loss
+            CEb_true_lin = ce_loss
+            TVb_true_lin = tv_loss
         else:
-            CEb_true_nonlin = loss
+            CEb_true_nonlin = ce_loss
+            TVb_true_nonlin = tv_loss
         
         #decode_visualisation(test_episode, belief_decoder, indices=[0,None], env_size = (3, 8), value_RNN=None)
     
@@ -71,6 +73,8 @@ def belief_test(config):
 
     CEs_true_lin = []
     CEs_true_nonlin = []
+    TVs_true_lin = []
+    TVs_true_nonlin = []
     
         
     # Iterate over epochs
@@ -94,14 +98,16 @@ def belief_test(config):
                     print("Non-Linear Decoder")
                     belief_decoder = NonLinBeliefDecoder(input_dim=belief_model.latent_dim, hidden_dim=64, belief_dim=episodes.S)
 
-                belief_decoder, loss = decode_training(
+                belief_decoder, ce_loss, tv_loss = decode_training(
                     episodes, belief_decoder, [0, None], 
                     value_RNN=belief_model, num_epochs=NUM_EPOCHS, lr=1e-3)
                 
                 if type == 'lin':
-                    CEs_true_lin.append(loss)
+                    CEs_true_lin.append(ce_loss)
+                    TVs_true_lin.append(tv_loss)
                 else:
-                    CEs_true_nonlin.append(loss)
+                    CEs_true_nonlin.append(ce_loss)
+                    TVs_true_nonlin.append(tv_loss)
 
                 # if epoch == 0 or epoch == EPOCHS[-1]:
                 #    decode_visualisation(test_episode, belief_decoder, [0, None], env_size = (3, 8), value_RNN=belief_model)
@@ -119,11 +125,13 @@ def belief_test(config):
     # Build dataframe
     df = pd.DataFrame({
         "index": indices,
-        "linear": [KL_start_lin] + KL_train_lin,
-        "nonlinear": [KL_start_nonlin] + KL_train_nonlin
+        "kl_linear": [KL_start_lin] + KL_train_lin,
+        "kl_nonlinear": [KL_start_nonlin] + KL_train_nonlin,
+        "tv_linear": [TVb_true_lin] + TVs_true_lin,
+        "tv_nonlinear": [TVb_true_nonlin] + TVs_true_nonlin
     })
 
     # Save to CSV
     print(df)
-    df.to_csv("kl_results.csv", index=False)  
-    print("\nSaved KL divergence results to kl_results.csv")
+    df.to_csv("divergence_results.csv", index=False)  
+    print("\nSaved KL divergence results to divergence_results.csv")
