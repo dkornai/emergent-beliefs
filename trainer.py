@@ -3,7 +3,7 @@ import os
 import torch
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-from environment import CliffWalk, cw_default_params_dict, ReacherEnv, PointMassEnv
+from environment import CliffWalk, cw_default_params_dict, ReacherEnv
 from nn_models import ModelCollection
 from train_chunk import train_with_chunks
 from train_belief import belief_test

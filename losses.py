@@ -17,28 +17,24 @@ def gaussian_NLL(pred_mean, pred_std, target):
     
     return nll.sum(dim =-1)  # sum over D to get [B, T]
 
-# TD loss function
+# Value TD loss: MSE between V(z_t) and r_{t+1} + γ V(z_{t+1})
 def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
-    
-    # calculate the TD target
-    values_next = torch.zeros_like(values)
-    values_next[:, :-1] = values[:, 1:]
+    V_t   = values[:, :-1]                  # [B, T-1]  V(z_0) .. V(z_{T-2})
+    V_tp1 = values[:, 1:].clone().detach()  # [B, T-1]  V(z_1) .. V(z_{T-1})
+    r_tp1 = rewards[:, 1:]                  # [B, T-1]  r_1    .. r_{T-1}
+    mask  = mask_traj[:, 1:]               # [B, T-1]
 
-    # Zero out bootstrap at terminal state
-    for b, l in enumerate(lengths): 
-        values_next[b, l-1] = 0.0
+    # Zero bootstrap at terminal state
+    for b, l in enumerate(lengths):
+        if l >= 2:
+            idx = min(l - 2, V_tp1.shape[1] - 1)
+            V_tp1[b, idx] = 0.0
 
-    # TD target
-    td_target = rewards + (gamma * values_next.detach())
+    td_target = r_tp1 + gamma * V_tp1
+    td_error  = (V_t - td_target) ** 2
+    td_error  = td_error * mask
 
-    # Squared TD error
-    td_error = (values - td_target)**2
-
-    # Mask invalid positions and average loss over non-masked values
-    td_error = td_error * mask_traj
-    loss = td_error.sum() / mask_traj.sum()
-
-    return loss
+    return td_error.sum() / mask.sum()
 
 def loss_q_td(
     q_values,     # [B, T-1] = Q(z_t, a_t)
@@ -52,10 +48,10 @@ def loss_q_td(
     #
     # SARSA-style: target_k = r_{k+1} + γ Q(z_{k+1}, a_{k+1})
 
-    q_t    = q_values[:, :-1]         # [B, T-2]  Q(z_k, a_k)      k=0..T-3
-    q_tp1  = q_values[:, 1:].detach() # [B, T-2]  Q(z_{k+1}, a_{k+1})
-    r_tp1  = rewards[:, 1:-1]         # [B, T-2]  r_{k+1}          k=0..T-3
-    mask   = mask_traj[:, 1:-1]       # [B, T-2]
+    q_t    = q_values[:, :-1]                   # [B, T-2]  Q(z_k, a_k)      k=0..T-3
+    q_tp1  = q_values[:, 1:].clone().detach()   # [B, T-2]  Q(z_{k+1}, a_{k+1})
+    r_tp1  = rewards[:, 1:-1]                   # [B, T-2]  r_{k+1}          k=0..T-3
+    mask   = mask_traj[:, 1:-1]                 # [B, T-2]
 
 
     # Zero bootstrap at terminal transitions
@@ -176,7 +172,7 @@ def compute_model_loss(
 
             # If there are enough value heads
             if i < len(models.v_models):
-                V_full   = models.v_models[i](z)                       # [B, T]
+                V_full   = models.v_models[i](z)                           # [B, T]
                 
                 # 1) state-value TD loss
                 V_loss += loss_value_td(
@@ -186,13 +182,16 @@ def compute_model_loss(
             # If there are enough q heads
             if i < len(models.q_models):
                 #3) Q-value TD loss
-                Q_full   = models.q_models[i](z[:, :-1, :], a[:, 1:, :])                       # [B, T-1]
+                Q_full   = models.q_models[i](z[:, :-1, :], a[:, 1:, :])   # [B, T-1]
 
                 Q_loss += loss_q_td(
                     q_values=Q_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
                 )
 
             critic_loss += (V_loss + Q_loss)
+            if i == 0:  # log losses from the most recent chunk
+                log_v_loss = V_loss.item()
+                log_q_loss = Q_loss.item()
 
         # ---------------------------------------------------
         # WORLD MODEL LOSS
@@ -228,8 +227,8 @@ def compute_model_loss(
     logs = {
         "value": critic_loss.item(),
         "world": pred_loss.item(),
-        "v_loss": V_loss.item() if lambda_value > 0.0 else -1,
-        "q_loss": Q_loss.item() if lambda_value > 0.0 else -1,
+        "v_loss": log_v_loss if lambda_value > 0.0 else -1,
+        "q_loss": log_q_loss if lambda_value > 0.0 else -1,
         "r_loss": L_r0.item() + L_r1.item() + L_r2.item() if lambda_world > 0.0 else -1,
         "o_loss": L_o1.item() + L_o2.item() if lambda_world > 0.0 else -1
     }
@@ -329,4 +328,4 @@ def compute_advantage(
     valid_adv  = advantage[mask_actor == 1.0]
     advantage  = (advantage - valid_adv.mean())
 
-    return advantage
+    return advantage.detach()

@@ -98,7 +98,7 @@ class QReadout(nn.Module):
     Output:
         Q : [B, T] or [B]  (broadcast over extra dims)
     """
-    def __init__(self, latent_dim, num_actions, hidden=128):
+    def __init__(self, latent_dim, num_actions, hidden=64):
         super().__init__()
         self.latent_dim = latent_dim
         self.num_actions = num_actions
@@ -186,7 +186,7 @@ class ActorReadout(nn.Module):
     """
     Readout from the latent state to a distribution over actions. \pi(a_t | z_t)
     """
-    def __init__(self, latent_dim, num_actions, actions_discrete, hidden_dim=64):
+    def __init__(self, latent_dim, num_actions, actions_discrete, hidden_dim=128):
         super().__init__()
         self.num_actions = num_actions
 
