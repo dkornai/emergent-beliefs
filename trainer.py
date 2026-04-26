@@ -26,11 +26,12 @@ def load_config(filepath):
                 line = line.split('#')[0].strip()
                 key, value = line.split('=', 1)
                 config[key.strip()] = eval(value.strip())
-                
+
     return SimpleNamespace(**config)
 
 
-
+ACTOR_STEPS = 10
+WORLD_STEPS = 50
 
 if __name__ == "__main__":
     # Read config file path from command line arguments
@@ -90,11 +91,12 @@ if __name__ == "__main__":
             num_new_chunks          = config.NUM_NEW_CHUNKS,
             ep_per_chunk            = config.EPISODES_PER_CHUNK,
             gamma                   = config.GAMMA,
-            actor_steps             = config.ACTOR_STEPS,
-            world_steps             = config.WORLD_STEPS,
+            actor_steps             = ACTOR_STEPS,
+            world_steps             = WORLD_STEPS,
             lambda_actor            = config.LAMBDA_ACTOR,
             lambda_value            = config.LAMBDA_VALUE,
             lambda_world            = config.LAMBDA_WORLD,
+            n_pred_steps            = config.N_PRED_STEPS,
             device                  = DEVICE,
             save_checkp             = config.SAVE_PARAM
             )

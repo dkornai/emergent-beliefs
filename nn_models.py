@@ -52,67 +52,56 @@ class ValueReadout(nn.Module):
 
 
 
-# class LegacyQReadout(nn.Module):
-#     """
-#     Map latent z_t to Q-values Q(z_t, a) for all actions.
-    
-#     Input:
-#         z : [B, T, latent_dim] or [B, latent_dim]
-#     Output:
-#         Q : [B, T, A] or [B, A]  (broadcast over extra dims)
-#     """
-#     def __init__(self, latent_dim, num_actions, hidden=128):
-#         super().__init__()
-#         self.latent_dim = latent_dim
-#         self.num_actions = num_actions
-
-#         self.net = nn.Sequential(
-#             nn.Linear(latent_dim, hidden),
-#             nn.ReLU(),
-#             nn.Linear(hidden, num_actions)
-#         )
-
-#     def forward(self, z):
-#         # Works for [B, T, H] or [B, H] transparently
-#         return self.net(z)  # last dim becomes num_actions
-
-#     def q_for_actions(self, z, actions_one_hot):
-#         """
-#         Convenience helper:
-#             z              : [B, T, latent_dim]
-#             actions_one_hot: [B, T, A] (one-hot)
-#         Returns:
-#             Q(z_t, a_t)    : [B, T]
-#         """
-#         q_all = self.forward(z)              # [B, T, A]
-#         q_sa  = torch.sum(q_all * actions_one_hot, dim=-1)
-#         return q_sa
-
 class QReadout(nn.Module):
     """
-    Map latent z_t to Q-values Q(z_t, a_t) for the specified actions a_t.
+    Map latent z_t to Q-values Q(z_t, a) for all actions.
     
     Input:
         z : [B, T, latent_dim] or [B, latent_dim]
-        a : [B, T, A]
     Output:
-        Q : [B, T] or [B]  (broadcast over extra dims)
+        Q : [B, T, A] or [B, A]  (broadcast over extra dims)
     """
-    def __init__(self, latent_dim, num_actions, hidden=64):
+    def __init__(self, latent_dim, num_actions, hidden=128):
         super().__init__()
         self.latent_dim = latent_dim
         self.num_actions = num_actions
 
         self.net = nn.Sequential(
-            nn.Linear(latent_dim+num_actions, hidden),
+            nn.Linear(latent_dim, hidden),
             nn.ReLU(),
-            nn.Linear(hidden, 1)
+            nn.Linear(hidden, num_actions)
         )
 
-    def forward(self, z, a):
-        # Works for [B, T, H+A] or [B, H+A] transparently
-        combined_input = torch.cat([z, a], dim=-1)  # [B, T, H+A]
-        return self.net(combined_input).squeeze(-1) # last dim becomes 1, squeeze to get [B, T] or [B]
+    def forward(self, z):
+        # Works for [B, T, H] or [B, H] transparently
+        return self.net(z)  # last dim becomes num_actions
+
+
+# class QReadout(nn.Module):
+#     """
+#     Map latent z_t to Q-values Q(z_t, a_t) for the specified actions a_t.
+    
+#     Input:
+#         z : [B, T, latent_dim] or [B, latent_dim]
+#         a : [B, T, A]
+#     Output:
+#         Q : [B, T] or [B]  (broadcast over extra dims)
+#     """
+#     def __init__(self, latent_dim, num_actions, hidden=64):
+#         super().__init__()
+#         self.latent_dim = latent_dim
+#         self.num_actions = num_actions
+
+#         self.net = nn.Sequential(
+#             nn.Linear(latent_dim+num_actions, hidden),
+#             nn.ReLU(),
+#             nn.Linear(hidden, 1)
+#         )
+
+#     def forward(self, z, a):
+#         # Works for [B, T, H+A] or [B, H+A] transparently
+#         combined_input = torch.cat([z, a], dim=-1)  # [B, T, H+A]
+#         return self.net(combined_input).squeeze(-1) # last dim becomes 1, squeeze to get [B, T] or [B]
 
 
 class RewardReadout(nn.Module):

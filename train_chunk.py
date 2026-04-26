@@ -18,11 +18,12 @@ def train_with_chunks(
         ep_per_chunk=10,
         gamma=0.95,
         actor_steps=10,
-        world_steps=20,
+        world_steps=50,
         lambda_actor=1.0,
         lambda_value=1.0,
         lambda_world=1.0,
         n_chunks_past=10,
+        n_pred_steps=2,
         device="cuda",
         save_checkp=False
     ):
@@ -67,6 +68,7 @@ def train_with_chunks(
             optimizers=optimizers,
             gamma=gamma,
             n_chunks_past=n_chunks_past,
+            n_pred_steps=n_pred_steps,
             lambda_actor=lambda_actor,
             lambda_value=lambda_value,
             lambda_world=lambda_world,
@@ -173,6 +175,7 @@ def optimisation_step(
         models          : ModelCollection,
         optimizers,
         gamma           : float,
+        n_pred_steps    : int,
         n_chunks_past   : int,
         lambda_actor    : float,
         lambda_value    : float,
@@ -192,7 +195,7 @@ def optimisation_step(
     optimizer_model, optimizer_actor = optimizers
 
     # ============================================================
-    # PHASE 1: update world model + critic *first*
+    # PHASE 1: update RNN + model readouts
     # ============================================================
     if lambda_world > 0 or lambda_value > 0:
         for _ in range(world_steps):
@@ -200,6 +203,7 @@ def optimisation_step(
                 all_chunks=memory,
                 models=models,
                 gamma=gamma,
+                n_pred_steps=n_pred_steps,
                 lambda_value=lambda_value,
                 lambda_world=lambda_world,
                 n_chunks_past=n_chunks_past,
@@ -219,7 +223,7 @@ def optimisation_step(
         world_loss, world_logs = None, None
 
     # ============================================================
-    # PHASE 2: update actor using *updated* latents & critic
+    # PHASE 2: update RNN + actor readout
     # ============================================================
     for _ in range(actor_steps):
         actor_loss, actor_logs = compute_actor_loss(

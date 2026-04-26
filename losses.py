@@ -37,35 +37,41 @@ def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
     return td_error.sum() / mask.sum()
 
 def loss_q_td(
-    q_values,     # [B, T-1] = Q(z_t, a_t)
-    rewards,      # [B, T]
-    mask_traj,    # [B, T]
-    lengths,
-    gamma=1.0
-):
-    # q_values: [B, T-1] where q_values[:, k] = Q(z_k, a_k)
-    #   (already aligned by caller)
-    #
-    # SARSA-style: target_k = r_{k+1} + γ Q(z_{k+1}, a_{k+1})
-
-    q_t    = q_values[:, :-1]                   # [B, T-2]  Q(z_k, a_k)      k=0..T-3
-    q_tp1  = q_values[:, 1:].clone().detach()   # [B, T-2]  Q(z_{k+1}, a_{k+1})
-    r_tp1  = rewards[:, 1:-1]                   # [B, T-2]  r_{k+1}          k=0..T-3
-    mask   = mask_traj[:, 1:-1]                 # [B, T-2]
-
-
-    # Zero bootstrap at terminal transitions
+        q_values, 
+        rewards, 
+        actions, 
+        mask_traj, 
+        lengths, 
+        gamma=1.0
+        ):
+    # q_values: [B, T, A] — compute Q for ALL timesteps, including terminal
+    # Select Q-values for actions actually taken: a_t is stored in actions[:, t+1]
+    # For the terminal timestep T-1, there's no "next action" but we don't need it
+    # since we zero the bootstrap there anyway.
+    
+    q_all = q_values  # [B, T, A]
+    
+    # Q(z_t, a_t): need a_t, which is actions[:, t+1] for t=0..T-2
+    q_curr = (q_all[:, :-1, :] * actions[:, 1:, :]).sum(dim=-1)   # [B, T-1]
+    
+    # Q(z_{t+1}, a_{t+1}): for t=0..T-3, this is q_curr shifted by one
+    # For the last position, bootstrap is zero (terminal)
+    q_next = torch.zeros_like(q_curr)                              # [B, T-1]
+    q_next[:, :-1] = q_curr[:, 1:].clone().detach()                # fill t=0..T-3
+    
+    # Zero bootstrap at terminal state
     for b, L in enumerate(lengths):
         if L >= 2:
-            # Last valid transition is k = L-2 in q_values,
-            # which is index L-2 in q_t (since q_t starts at k=0)
-            idx = min(L - 2, q_tp1.shape[1] - 1)
-            q_tp1[b, idx] = 0.0
-
-    td_target = r_tp1 + gamma * q_tp1
-    td_error  = (q_t - td_target) ** 2
-    td_error  = td_error * mask
-
+            idx = L - 2  # last valid transition index in q_curr
+            if idx < q_next.shape[1]:
+                q_next[b, idx] = 0.0
+    
+    r_next = rewards[:, 1:]        # [B, T-1]
+    mask   = mask_traj[:, 1:]      # [B, T-1]
+    
+    td_target = r_next + gamma * q_next
+    td_error  = (q_curr - td_target) ** 2 * mask
+    
     denom = mask.sum()
     if denom.item() == 0:
         return td_error.mean() * 0.0
@@ -155,7 +161,6 @@ def compute_model_loss(
     for i, EC in enumerate(chunks_to_process):
         # Move data to device
         h    = EC.batch_histories.to(device)
-        a    = EC.batch_actions.to(device)
         obs  = EC.batch_observations.to(device)
         rew  = EC.batch_rewards.to(device)
         mask = EC.batch_mask_traj.to(device)
@@ -173,21 +178,13 @@ def compute_model_loss(
 
             # If there are enough value heads
             if i < len(models.v_models):
-                V_full   = models.v_models[i](z)                           # [B, T]
-                
-                # 1) state-value TD loss
-                V_loss += loss_value_td(
-                    values=V_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
-                    )
+                V_full   = models.v_models[i](z)   # [B, T]
+                V_loss += loss_value_td(values=V_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma)
 
             # If there are enough q heads
             if i < len(models.q_models):
-                #3) Q-value TD loss
-                Q_full   = models.q_models[i](z[:, :-1, :], a[:, 1:, :])   # [B, T-1]
-
-                Q_loss += loss_q_td(
-                    q_values=Q_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma
-                )
+                Q_full   = models.q_models[i](z)   # [B, T-1, A]
+                Q_loss += loss_q_td(q_values=Q_full, rewards=rew, actions=actions, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma)
 
             critic_loss += (V_loss + Q_loss)
             if i == 0:  # log losses from the most recent chunk
@@ -225,6 +222,17 @@ def compute_model_loss(
 
                 rew_pred_loss += L_r2
                 obs_pred_loss += L_o2
+
+            if n_pred_steps >= 3:
+                # 3-step latent rollout
+                pred_z3 = models.pred_model(pred_z2, actions, pred_steps=3)
+                # Reward 3 step
+                L_r3 = loss_reward(models.rew_model(pred_z3), rew, mask, pred_steps=3)
+                # Obs 3 step
+                L_o3 = loss_obs(models.obs_model(pred_z3), obs, models.obs_discrete, mask, pred_steps=3)
+
+                rew_pred_loss += L_r3
+                obs_pred_loss += L_o3
 
             pred_loss += (obs_pred_loss + rew_pred_loss)
                
