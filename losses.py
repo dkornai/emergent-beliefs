@@ -127,6 +127,7 @@ def compute_model_loss(
         all_chunks:         list[EpisodeCollection],
         models:             ModelCollection,
         gamma,
+        n_pred_steps=2,
         lambda_value=1.0,
         lambda_world=1.0,
         n_chunks_past=10,
@@ -197,27 +198,35 @@ def compute_model_loss(
         # WORLD MODEL LOSS
         # ---------------------------------------------------
         if lambda_world > 0.0:
-            # Reward 0 Step
+            obs_pred_loss = torch.tensor(0.0, device=device)
+            rew_pred_loss = torch.tensor(0.0, device=device)
+
             L_r0 = loss_reward(models.rew_model(z), rew, mask, pred_steps=0)
-
-            # 1-step latent rollout
-            pred_z1 = models.pred_model(z, actions, pred_steps=1)
-            # Reward 1 step
-            L_r1 = loss_reward(models.rew_model(pred_z1), rew, mask, pred_steps=1)
-            # Obs 1 step
-            L_o1 = loss_obs(models.obs_model(pred_z1), obs, models.obs_discrete, mask, pred_steps=1)
-
-            # 2-step latent rollout
-            pred_z2 = models.pred_model(pred_z1, actions, pred_steps=2)
-            # Reward 2 step
-            L_r2 = loss_reward(models.rew_model(pred_z2), rew, mask, pred_steps=2)
-            # Obs 2 step
-            L_o2 = loss_obs(models.obs_model(pred_z2), obs, models.obs_discrete, mask, pred_steps=2)
-
-            # Total 
-            pred_loss += (L_r0 + L_r1 + L_o1 + L_r2 + L_o2)
-
+            rew_pred_loss += L_r0
             
+            if n_pred_steps >= 1:
+                # 1-step latent rollout
+                pred_z1 = models.pred_model(z, actions, pred_steps=1)
+                # Reward 1 step
+                L_r1 = loss_reward(models.rew_model(pred_z1), rew, mask, pred_steps=1)
+                # Obs 1 step
+                L_o1 = loss_obs(models.obs_model(pred_z1), obs, models.obs_discrete, mask, pred_steps=1)
+                
+                rew_pred_loss += L_r1
+                obs_pred_loss += L_o1
+
+            if n_pred_steps >= 2:
+                # 2-step latent rollout
+                pred_z2 = models.pred_model(pred_z1, actions, pred_steps=2)
+                # Reward 2 step
+                L_r2 = loss_reward(models.rew_model(pred_z2), rew, mask, pred_steps=2)
+                # Obs 2 step
+                L_o2 = loss_obs(models.obs_model(pred_z2), obs, models.obs_discrete, mask, pred_steps=2)
+
+                rew_pred_loss += L_r2
+                obs_pred_loss += L_o2
+
+            pred_loss += (obs_pred_loss + rew_pred_loss)
                
     # Total loss is from both critic loss and world loss
     critic_loss = (lambda_value * critic_loss) / n_chunks
@@ -229,8 +238,8 @@ def compute_model_loss(
         "world": pred_loss.item(),
         "v_loss": log_v_loss if lambda_value > 0.0 else -1,
         "q_loss": log_q_loss if lambda_value > 0.0 else -1,
-        "r_loss": L_r0.item() + L_r1.item() + L_r2.item() if lambda_world > 0.0 else -1,
-        "o_loss": L_o1.item() + L_o2.item() if lambda_world > 0.0 else -1
+        "r_loss": rew_pred_loss.item() if lambda_world > 0.0 else -1,
+        "o_loss": obs_pred_loss.item() if lambda_world > 0.0 else -1
     }
 
     return total_loss, logs
@@ -304,24 +313,24 @@ def compute_advantage(
         lambda_value=1.0,   
         device="cpu"
     ):
-    # ---------------------------------------------------
-    # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
-    # ---------------------------------------------------
-    if lambda_value > 0:
-        # State-value critic and Q-value critic for baseline
-        V_t = models.v_models[0](z_full[:, :-1, :])                           # [B, T-1]
-        Q_t = models.q_models[0](z_full[:, :-1, :], act_new[:, 1:, :])        # [B, T-1] (first action is a dummy vector)
+    # # ---------------------------------------------------
+    # # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
+    # # ---------------------------------------------------
+    # if lambda_value > 0:
+    #     # State-value critic and Q-value critic for baseline
+    #     V_t = models.v_models[0](z_full[:, :-1, :])                           # [B, T-1]
+    #     Q_t = models.q_models[0](z_full[:, :-1, :], act_new[:, 1:, :])        # [B, T-1] (first action is a dummy vector)
 
-        advantage = Q_t.detach() - V_t.detach() # [B, T-1]
+    #     advantage = Q_t.detach() - V_t.detach() # [B, T-1]
 
-    # ---------------------------------------------------
-    # ACTOR LOSS: use REINFORCE baseline
-    # ---------------------------------------------------
-    elif lambda_value == 0:
-        # Monte Carlo returns as baseline
-        mc_returns = newest_chunk.get_monte_carlo_returns(gamma).to(device)  # [B, T]
-        
-        advantage = mc_returns[:, :-1].detach()                                    # [B, T-1], align with z_0..z_{T-2}
+    # # ---------------------------------------------------
+    # # ACTOR LOSS: use REINFORCE baseline
+    # # ---------------------------------------------------
+    # elif lambda_value == 0:
+    # Monte Carlo returns as baseline
+    mc_returns = newest_chunk.get_monte_carlo_returns(gamma).to(device)  # [B, T]
+    
+    advantage = mc_returns[:, :-1].detach()                                    # [B, T-1], align with z_0..z_{T-2}
 
     # Normalise over valid entries (mean-center)
     mask_actor = valid_mask[:, 1:]

@@ -1,10 +1,10 @@
 """Hyperparameters"""
 
-OUTPUT_DIR = 'results/res_reach'
+OUTPUT_DIR = 'results/res_no_aux'
 
 # How much and what type of data to collect
 SAVE_PARAM = True
-REPLICATES = 1
+REPLICATES = 25
 
 # Environment type
 ENV_TYPE = 'cliffwalk'  
@@ -12,7 +12,7 @@ GAMMA = 0.98
 
 # Model collection 
 RNN_HIDDEN = 64
-N_VALUE_MODELS = 1
+N_VALUE_MODELS = 0
 N_Q_MODELS = 1
 
 # Data Gathering
@@ -23,5 +23,5 @@ NUM_NEW_CHUNKS      = 101
 ACTOR_STEPS  = 10
 WORLD_STEPS  = 50
 LAMBDA_ACTOR = 1.0
-LAMBDA_VALUE = 1.0
+LAMBDA_VALUE = 0.0
 LAMBDA_WORLD = 0.0

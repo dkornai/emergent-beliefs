@@ -333,10 +333,13 @@ class ModelCollection(nn.Module):
 
     def init_optimizers(self):
         # Actor optimizer
+        agent_params = list(self.actor_model.parameters()) 
+        rnn_params =list(self.belief_model.parameters())
+
         if self.actions_discrete:
-            optimizer_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-4)
+            optimizer_actor = torch.optim.Adam([{'params': agent_params, 'lr': 1e-4}, {'params': rnn_params, 'lr': 1e-4}])
         else:
-            optimizer_actor = torch.optim.Adam(self.actor_model.parameters(), lr=1e-4)  # higher LR for continuous actions
+            optimizer_actor = torch.optim.Adam([{'params': agent_params, 'lr': 1e-4}, {'params': rnn_params, 'lr': 1e-4}])
 
         # World model optimizer
         core_params   = list(self.belief_model.parameters()) + list(self.pred_model.parameters())

@@ -265,11 +265,17 @@ def optim_metrics(
         printstr += f"value_loss={metrics['value_loss']:.2f} "
         printstr += f"q_loss={world_logs['q_loss']:.2f} "
         printstr += f"v_loss={world_logs['v_loss']:.2f} "
+        # Add to disk logs as well
+        metrics['q_loss'] = world_logs['q_loss']
+        metrics['v_loss'] = world_logs['v_loss']
         
     if metrics['pred_loss'] != -1: 
         printstr += f"pred_loss={metrics['pred_loss']:.2f} "
         printstr += f"r_loss={world_logs['r_loss']:.2f} "
         printstr += f"o_loss={world_logs['o_loss']:.2f} "
+        # Add to disk logs as well
+        metrics['pred_r_loss'] = world_logs['r_loss']
+        metrics['pred_o_loss'] = world_logs['o_loss']
     
     printstr += f"actor_loss={metrics['actor_loss']:.2f}"
 
