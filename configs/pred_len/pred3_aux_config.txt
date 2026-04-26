@@ -1,0 +1,27 @@
+"""Hyperparameters"""
+
+OUTPUT_DIR = 'results/res_pred3_aux'
+
+# How much and what type of data to collect
+SAVE_PARAM = True
+REPLICATES = 5
+
+# Environment type
+ENV_TYPE = 'cliffwalk'  
+GAMMA = 0.98
+
+# Data Gathering
+EPISODES_PER_CHUNK  = 100
+NUM_NEW_CHUNKS      = 101
+
+# Model collection 
+RNN_HIDDEN = 64
+N_VALUE_MODELS = 0
+N_Q_MODELS = 0
+N_PRED_STEPS = 3
+
+# Training
+LAMBDA_ACTOR = 1.0
+LAMBDA_VALUE = 0.0
+LAMBDA_WORLD = 0.5
+
