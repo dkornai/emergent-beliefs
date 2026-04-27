@@ -78,7 +78,7 @@ def belief_test(config):
     
         
     # Iterate over epochs
-    for chunk in range(0, config.NUM_NEW_CHUNKS + 10):
+    for chunk in config.SAVE_PARAM:
         candidate_filename = f"checkpoints/checkpoint_epoch_{chunk}.pth"
         if os.path.exists(candidate_filename):
             indices.append(chunk)
@@ -134,4 +134,4 @@ def belief_test(config):
     # Save to CSV
     print(df)
     df.to_csv("divergence_results.csv", index=False)  
-    print("\nSaved KL divergence results to divergence_results.csv")
+    print("\nSaved divergence results to divergence_results.csv")

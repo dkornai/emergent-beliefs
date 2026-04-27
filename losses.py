@@ -34,7 +34,10 @@ def loss_value_td(values, rewards, mask_traj, lengths, gamma=1.0):
     td_error  = (V_t - td_target) ** 2
     td_error  = td_error * mask
 
-    return td_error.sum() / mask.sum()
+    avg_td_error = td_error.sum() / mask.sum()
+    max_td_error = td_error.max().item()
+
+    return avg_td_error, max_td_error
 
 def loss_q_td(
         q_values, 
@@ -74,8 +77,12 @@ def loss_q_td(
     
     denom = mask.sum()
     if denom.item() == 0:
-        return td_error.mean() * 0.0
-    return td_error.sum() / denom
+        return td_error.mean() * 0.0, 0.0
+    
+    avg_td_error = td_error.sum() / denom
+    max_td_error = td_error.max().item()
+
+    return avg_td_error, max_td_error
 
 
 def loss_reward(
@@ -179,17 +186,21 @@ def compute_model_loss(
             # If there are enough value heads
             if i < len(models.v_models):
                 V_full   = models.v_models[i](z)   # [B, T]
-                V_loss += loss_value_td(values=V_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma)
+                avg_V_error, max_V_error = loss_value_td(values=V_full, rewards=rew, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma)
+                V_loss += avg_V_error
 
             # If there are enough q heads
             if i < len(models.q_models):
                 Q_full   = models.q_models[i](z)   # [B, T-1, A]
-                Q_loss += loss_q_td(q_values=Q_full, rewards=rew, actions=actions, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma)
+                avg_Q_error, max_Q_error = loss_q_td(q_values=Q_full, rewards=rew, actions=actions, mask_traj=mask, lengths=EC.ep_lengths, gamma=gamma)
+                Q_loss += avg_Q_error
 
             critic_loss += (V_loss + Q_loss)
             if i == 0:  # log losses from the most recent chunk
                 log_v_loss = V_loss.item()
                 log_q_loss = Q_loss.item()
+                log_v_max_error = max_V_error
+                log_q_max_error = max_Q_error
 
         # ---------------------------------------------------
         # WORLD MODEL LOSS
@@ -245,7 +256,9 @@ def compute_model_loss(
         "value": critic_loss.item(),
         "world": pred_loss.item(),
         "v_loss": log_v_loss if lambda_value > 0.0 else -1,
+        "v_max_error": log_v_max_error if lambda_value > 0.0 else -1,
         "q_loss": log_q_loss if lambda_value > 0.0 else -1,
+        "q_max_error": log_q_max_error if lambda_value > 0.0 else -1,
         "r_loss": rew_pred_loss.item() if lambda_world > 0.0 else -1,
         "o_loss": obs_pred_loss.item() if lambda_world > 0.0 else -1
     }

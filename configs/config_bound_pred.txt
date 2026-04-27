@@ -1,9 +1,9 @@
 """Hyperparameters"""
 
-OUTPUT_DIR = 'results/res_val_aux'
+OUTPUT_DIR = 'results/res_bound_pred'
 
 # How much and what type of data to collect
-SAVE_PARAM = [1, 11, 21, 31, 41, 51, 61, 71, 81, 91, 101]
+SAVE_PARAM =  [1, 2, 3, 4, 5, 6, 8, 11, 13, 16, 18, 21, 26, 28, 31, 36, 41, 46, 51, 61, 71, 81, 91, 101]
 REPLICATES = 25
 
 # Environment type
@@ -16,12 +16,12 @@ NUM_NEW_CHUNKS      = 101
 
 # Model collection 
 RNN_HIDDEN = 64
-N_VALUE_MODELS = 10
-N_Q_MODELS = 10
-N_PRED_STEPS = 0
+N_VALUE_MODELS = 0
+N_Q_MODELS = 0
+N_PRED_STEPS = 2
 
 # Training
-LAMBDA_ACTOR = 1.0
-LAMBDA_VALUE = 1.0
-LAMBDA_WORLD = 0.0
+LAMBDA_ACTOR = 0.1
+LAMBDA_VALUE = 0.0
+LAMBDA_WORLD = 0.5
 

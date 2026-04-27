@@ -25,15 +25,15 @@ def train_with_chunks(
         n_chunks_past=10,
         n_pred_steps=2,
         device="cuda",
-        save_checkp=False
+        save_checkp=[]
     ):
     
     # Initialise loggers for agent performance and train losses
     logs_agent_perf = TrainLogger()
     logs_train_loss = TrainLogger()
 
-    # Optionally save belief RNN
-    if save_checkp:
+    # Optionally save belief RNN at initialisation
+    if 0 in save_checkp:
         save_checkpoint(models.belief_model, 0, checkpoint_dir=f"checkpoints", filename=None)
 
 
@@ -85,9 +85,8 @@ def train_with_chunks(
             )
 
         # Optionally save belief RNN
-        if (chunk_idx - 1) % 10 == 0:
-            if save_checkp:
-                save_checkpoint(models.belief_model, chunk_idx, filename=None)
+        if chunk_idx in save_checkp:
+            save_checkpoint(models.belief_model, chunk_idx, filename=None)
 
     # Save logs
     logs_agent_perf.save_csv("agent_perf.csv")
@@ -269,9 +268,13 @@ def optim_metrics(
         printstr += f"value_loss={metrics['value_loss']:.2f} "
         printstr += f"q_loss={world_logs['q_loss']:.2f} "
         printstr += f"v_loss={world_logs['v_loss']:.2f} "
+        printstr += f"q_max_error={world_logs['q_max_error']:.2f} "
+        printstr += f"v_max_error={world_logs['v_max_error']:.2f} "
         # Add to disk logs as well
         metrics['q_loss'] = world_logs['q_loss']
         metrics['v_loss'] = world_logs['v_loss']
+        metrics['q_max_error'] = world_logs['q_max_error']
+        metrics['v_max_error'] = world_logs['v_max_error']
         
     if metrics['pred_loss'] != -1: 
         printstr += f"pred_loss={metrics['pred_loss']:.2f} "

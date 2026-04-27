@@ -3,8 +3,8 @@
 OUTPUT_DIR = 'results/res_both_aux'
 
 # How much and what type of data to collect
-SAVE_PARAM = True
-REPLICATES = 5
+SAVE_PARAM = [1, 11, 21, 31, 41, 51, 61, 71, 81, 91, 101]
+REPLICATES = 25
 
 # Environment type
 ENV_TYPE = 'cliffwalk'  
