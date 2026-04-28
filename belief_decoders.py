@@ -169,6 +169,9 @@ def train_belief_decoder(
 
 
 def evaluate_belief(value_model, belief_model, episode):
+    """
+    Transform the history of a test episode into the belief states using the trained belief decoder and the value RNN's latent states as input.
+    """
     value_model.eval()  # switch to eval mode
     belief_model.eval()  # switch to eval mode
 
@@ -182,14 +185,13 @@ def evaluate_belief(value_model, belief_model, episode):
     
 
 
-def plot_decoded_belief_over_true(beliefs, test_episode, cliff_dim = (3, 4), belief_index = [0, None]):
+def plot_decoded_belief_over_true(beliefs, test_episode, cliff_dim = (3, 4)):
     """
     Plot the decoded beliefs over non-nuiseance states (e.g., cliff states) and compare them with the true beliefs.
     """
     true_beliefs = test_episode.belief_states
     true_beliefs = np.round(true_beliefs, 2)
-    # cut the true beliefs to the specified dimensions along the observation dimension
-    true_beliefs = true_beliefs[:, belief_index[0]:belief_index[1]]  # [T, belief_dim]
+
 
     if cliff_dim is not None:
         assert beliefs.shape[1] == cliff_dim[0] * cliff_dim[1], "Belief dimensions do not match the cliff dimensions."
@@ -225,48 +227,24 @@ def plot_decoded_belief_over_true(beliefs, test_episode, cliff_dim = (3, 4), bel
         plt.tight_layout()
         plt.show()
 
-
-def plot_decoded_belief_over_nuisance(beliefs, test_episode, belief_index = [0, None]):
+def estimate_entropy(belief_states, base=np.e):
     """
-    Plot the decoded beliefs over nuisance states (HMM output) and compare them with the true beliefs.
+    Estimate the average entropy (of the belief states across all time steps and episodes).
     """
-    true_beliefs = test_episode.belief_states
-    true_beliefs = np.round(true_beliefs, 2)
-    # cut the true beliefs to the specified dimensions along the observation dimension
-    true_beliefs = true_beliefs[:, belief_index[0]:belief_index[1]]  # [T, belief_dim]
-
-    fig, axs = plt.subplots(1, 3, figsize=(8, 8))
+    eps = 1e-8  # prevent log(0)
+    belief_states = np.clip(belief_states, eps, 1.0)
+    log_fn = np.log if base == np.e else lambda x: np.log2(x) if base == 2 else lambda x: np.log(x) / np.log(base)
     
-    # True beliefs
-    axs[0].imshow(true_beliefs, cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
-    axs[0].set_title("True Beliefs")
-    axs[0].axis('off')
-    
-    # Predicted beliefs
-    axs[1].imshow(beliefs, cmap='viridis', interpolation='nearest', vmin=0, vmax=1)
-    axs[1].set_title("Decoded Beliefs")
-    axs[1].axis('off')
-    
-    # Compute and display the difference
-    diff_data = np.abs(true_beliefs - beliefs)
-    diff_data = diff_data.reshape(true_beliefs.shape)
-    axs[2].imshow(diff_data, cmap='hot', interpolation='nearest', vmin=0, vmax=1)
-    axs[2].set_title("Difference")
-    axs[2].axis('off')
-    # Annotate the cells in the third subplot
-    for i in range(diff_data.shape[0]):
-        for j in range(diff_data.shape[1]):
-            axs[2].text(j, i, f"{diff_data[i, j]:.2f}", ha='center', va='center', color='white')
-
-    plt.tight_layout()
-    plt.show()
-
+    entropies = -np.sum(belief_states * log_fn(belief_states), axis=1)
+    return np.round(np.mean(entropies),2)
 
 def decode_training(episodes, belief_decoder, indices, value_RNN=None, num_epochs=1001, lr=1e-3, batch_size=5000):
+    """
+    Train the belief decoder to decode the true belief states from either the obs+action history or the RNN's latent states, and calculate the CE and TV losses.
+    """
 
     if value_RNN is not None:
         histories   = episodes.batch_histories
-        mask_traj   = episodes.batch_mask_traj
         with torch.no_grad():
             input_to_belief_decoder = value_RNN(histories)
     else:
@@ -277,7 +255,10 @@ def decode_training(episodes, belief_decoder, indices, value_RNN=None, num_epoch
 
     return belief_decoder, ce_loss, tv_loss
     
-def decode_visualisation(test_episode, belief_decoder, indices, env_size, value_RNN=None):    
+def decode_visualisation(test_episode, belief_decoder, env_size, value_RNN=None):   
+    """
+    Visualise the decoded beliefs over time for a test episode, and compare them with the true beliefs.
+    """ 
     
     if value_RNN is not None:
         pred_belief = evaluate_belief(value_RNN, belief_decoder, test_episode)[0]
@@ -285,15 +266,4 @@ def decode_visualisation(test_episode, belief_decoder, indices, env_size, value_
         pred_belief = belief_decoder(torch.tensor(test_episode.history, dtype=torch.float32)).detach().numpy()
     
     print("Belief Decoder:")
-    if indices[1] is None:
-        plot_decoded_belief_over_true(pred_belief, test_episode, env_size, belief_index=indices)
-    else:
-        plot_decoded_belief_over_nuisance(pred_belief, test_episode, belief_index=indices)
-
-def estimate_entropy(belief_states, base=np.e):
-    eps = 1e-8  # prevent log(0)
-    belief_states = np.clip(belief_states, eps, 1.0)
-    log_fn = np.log if base == np.e else lambda x: np.log2(x) if base == 2 else lambda x: np.log(x) / np.log(base)
-    
-    entropies = -np.sum(belief_states * log_fn(belief_states), axis=1)
-    return np.round(np.mean(entropies),2)
+    plot_decoded_belief_over_true(pred_belief, test_episode, env_size)

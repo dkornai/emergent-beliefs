@@ -215,34 +215,3 @@ def compute_cw_success(EC: EpisodeCollection, env):
     success_rate = successes / EC.B
     
     return success_rate
-
-def compute_reach_success(EC: EpisodeCollection, threshold=0.05):
-    """
-    Fraction of episodes where the finger was within `threshold`
-    of the target at the final timestep.
-    
-    Uses the to_target observation (indices 4:6 in the default
-    obs layout: [position(4), to_target(2), velocity(2)]).
-    """
-    avg_dist = []
-
-    successes = 0
-    for ep in EC.episodes:
-        # to_target is the finger-to-target vector in the observation
-        final_obs = ep.observations[-1]
-        to_target = final_obs[4:6]  # adjust indices if include_velocity=False
-        dist = np.linalg.norm(to_target)
-        if dist < threshold:
-            successes += 1
-
-        # calculate averag distance to target in across the entire episode
-        for obs in ep.observations:
-            to_target = obs[4:6]
-            dist = np.linalg.norm(to_target)
-            avg_dist.append(dist)
-
-    success_rate = successes / EC.B
-
-    avg_dist = np.mean(avg_dist)
-
-    return success_rate, avg_dist

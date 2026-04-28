@@ -292,12 +292,8 @@ def compute_actor_loss(
     # Compute the advantage
     advantage = compute_advantage(                      # [B, T-1]
         newest_chunk=newest_chunk,
-        z_full=z_full,
         valid_mask=mask_new,
-        act_new=act_new,
-        models=models,
         gamma=gamma,
-        lambda_value=lambda_value,
         device=device
     )
 
@@ -326,28 +322,13 @@ def compute_actor_loss(
 
 def compute_advantage(
         newest_chunk:   EpisodeCollection,
-        z_full:         torch.tensor,
         valid_mask:     torch.tensor,
-        act_new:        torch.tensor,
-        models:         ModelCollection,
-        gamma,
-        lambda_value=1.0,   
+        gamma, 
         device="cpu"
-    ):
-    # # ---------------------------------------------------
-    # # ACTOR LOSS: use advantages A(z_t, a_t) = Q(z_t, a_t) - V(z_t)
-    # # ---------------------------------------------------
-    # if lambda_value > 0:
-    #     # State-value critic and Q-value critic for baseline
-    #     V_t = models.v_models[0](z_full[:, :-1, :])                           # [B, T-1]
-    #     Q_t = models.q_models[0](z_full[:, :-1, :], act_new[:, 1:, :])        # [B, T-1] (first action is a dummy vector)
-
-    #     advantage = Q_t.detach() - V_t.detach() # [B, T-1]
-
-    # # ---------------------------------------------------
-    # # ACTOR LOSS: use REINFORCE baseline
-    # # ---------------------------------------------------
-    # elif lambda_value == 0:
+        ):
+    """
+    Compute the advantage for the actor loss, using Monte Carlo returns as the baseline.
+    """
     # Monte Carlo returns as baseline
     mc_returns = newest_chunk.get_monte_carlo_returns(gamma).to(device)  # [B, T]
     
